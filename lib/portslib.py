@@ -399,10 +399,10 @@ def render_static_entry(e):
         f"    lane: {e['lane']}\n"
         f"    role: {e['role']}\n"
         f"    port: {e['port']}\n"
-        f"    bind: {e['bind']}\n"
-        f"    unit: {e['unit']}\n"
-        f"    health: {e['health']}\n"
-        f"    portal: {{title: {title}, tab: {str(e['portal']['tab']).lower()}}}\n"
+        f"    bind: {json.dumps(e['bind'])}\n"
+        f"    unit: {json.dumps(e['unit'])}\n"
+        f"    health: {json.dumps(e['health'])}\n"
+        f"    portal: {{title: {json.dumps(title)}, tab: {str(e['portal']['tab']).lower()}}}\n"
     )
 
 
