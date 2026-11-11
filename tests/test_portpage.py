@@ -60,55 +60,6 @@ class TestParseHash(unittest.TestCase):
         with self.assertRaises(ValueError):
             portpage.normalize_hash(99999)
 
-class FakeAdmin:
-    """Minimal Caddy admin stub: {server: [routes]}."""
-
-    def __init__(self):
-        self.routes = []
-
-    def urlopen(self, req, timeout=10):
-        return self._handle("GET", self._url(req), None)
-
-    def handle(self, req, timeout=10):
-        method, body = "GET", None
-        if hasattr(req, "get_method"):
-            method, body = req.get_method(), req.data
-        return self._handle(method, self._url(req), body)
-
-    @staticmethod
-    def _url(req):
-        url = req.full_url if hasattr(req, "full_url") else req
-        _, _, rest = url.partition("/config")
-        return rest
-
-    def _handle(self, method, rest, body):
-        import io
-        if method == "GET" and rest == "/apps/http/servers":
-            return io.BytesIO(json.dumps({"srv0": {}}).encode())
-        if method == "GET" and rest == "/apps/http/servers/srv0/routes":
-            return io.BytesIO(json.dumps(self.routes).encode())
-        if method == "POST":
-            self.routes.append(json.loads(body.decode()))
-            return io.BytesIO(b"")
-        if method == "DELETE":
-            idx = int(rest.rsplit("/", 1)[1])
-            if idx >= len(self.routes):
-                raise urllib.error.HTTPError(rest, 404, "no", {}, None)
-            del self.routes[idx]
-            return io.BytesIO(b"")
-        raise AssertionError(f"unexpected {method} {rest}")
-
-
-class FakeRun:
-    def __init__(self, rc=0, err=b""):
-        self.rc, self.err, self.calls = rc, err, []
-
-    def __call__(self, *args):
-        import subprocess
-        self.calls.append(args)
-        return subprocess.CompletedProcess(args, self.rc, b"", self.err)
-
-
 class TestResolve(unittest.TestCase):
     def test_tailnet_first(self):
         r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
@@ -182,34 +133,88 @@ class TestProfiles(unittest.TestCase):
                 portpage.validate_profile(bad)
 
 
-class TestGateways(unittest.TestCase):
-    def test_tailscale_helpers(self):
-        ok = FakeRun(0)
-        portpage.tailscale_ensure(3701, run=ok)
-        self.assertEqual(ok.calls[0][:3], ("tailscale", "serve", "--bg"))
-        bad = FakeRun(1, b"permission denied")
-        with self.assertRaises(RuntimeError):
-            portpage.tailscale_ensure(3701, run=bad)
+class TestResolve(unittest.TestCase):
+    def test_tailnet_stored_and_reachable(self):
+        r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
+                             tailnet_reachable=True,
+                             profile={"tailnet_url": "https://multica.x.ts.net/",
+                                      "open": "auto", "path": "/"})
+        self.assertEqual((r["action"], r["gateway"]), ("frame", "tailnet"))
+        self.assertEqual(r["url"], "https://multica.x.ts.net/")
+
+    def test_public_fallback_without_tailnet(self):
+        r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
+                             profile={"spa": True, "open": "auto", "path": "/"})
+        self.assertEqual((r["action"], r["gateway"]), ("frame", "public"))
+        self.assertEqual(r["popout_url"], "https://multica.ddvnguyen.com")
+
+    def test_plain_port_embeds(self):
+        r = portpage.resolve(4321, profile=portpage.default_profile(4321))
+        self.assertEqual((r["action"], r["gateway"]), ("frame", "proxy"))
+        self.assertEqual(r["url"], "/proxy/lease-4321/")
+        self.assertEqual(r["warning"], "")
+
+    def test_spa_warns_in_proxy(self):
+        r = portpage.resolve(4321, profile={"open": "embed", "spa": True,
+                                            "path": "/"})
+        self.assertEqual(r["gateway"], "proxy")
+        self.assertIn("may not render", r["warning"])
+
+    def test_pinned_modes(self):
+        r = portpage.resolve(3701, profile={"open": "public"},
+                             public_url="https://multica.ddvnguyen.com",
+                             tailnet_reachable=True)
+        self.assertEqual(r["gateway"], "public")
+        r = portpage.resolve(3701, profile={"open": "tailnet"},
+                             public_url="https://multica.ddvnguyen.com",
+                             tailnet_reachable=False)
+        self.assertEqual(r["action"], "refuse")
+        r = portpage.resolve(3701, overrides={"open": "embed"},
+                             public_url="https://multica.ddvnguyen.com",
+                             tailnet_reachable=True)
+        self.assertEqual(r["gateway"], "proxy")
+
+    def test_bad_port(self):
         with self.assertRaises(ValueError):
-            portpage.tailscale_ensure(99999, run=ok)
-        missing = FakeRun(0, b"handler does not exist")
-        portpage.tailscale_remove(4321, run=missing)
+            portpage.resolve(99999)
+        with self.assertRaises(ValueError):
+            portpage.resolve("3701")
 
-    def test_caddy_helpers(self):
-        admin = FakeAdmin()
-        self.assertTrue(portpage.caddy_ensure_port_route(
-            "http://x", "srv0", 4321, urlopen=admin.handle))
-        self.assertFalse(portpage.caddy_ensure_port_route(
-            "http://x", "srv0", 4321, urlopen=admin.handle))
-        self.assertEqual(portpage.stale_port_routes(
-            "http://x", "srv0", [4321], urlopen=admin.handle), [])
-        self.assertEqual(len(portpage.stale_port_routes(
-            "http://x", "srv0", [], urlopen=admin.handle)), 1)
-        self.assertTrue(portpage.caddy_remove_port_route(
-            "http://x", "srv0", 4321, urlopen=admin.handle))
-        self.assertFalse(portpage.caddy_remove_port_route(
-            "http://x", "srv0", 4321, urlopen=admin.handle))
 
+class TestProfiles(unittest.TestCase):
+    def test_crud(self):
+        path = os.path.join(TMP_BASE, "m312-profiles.yaml")
+        if os.path.exists(path):
+            os.unlink(path)
+        try:
+            self.assertEqual(portpage.load_profiles(path), {})
+            saved = portpage.save_profile(path, {"port": 3701, "open": "public",
+                                                 "label": "Multica",
+                                                 "tailnet_url": "",
+                                                 "spa": True})
+            self.assertEqual(saved["open"], "public")
+            self.assertTrue(saved["spa"])
+            got = portpage.load_profiles(path)
+            self.assertEqual(got[3701]["label"], "Multica")
+            self.assertEqual(got[3701]["path"], "/")
+            self.assertTrue(portpage.delete_profile(path, 3701))
+            self.assertFalse(portpage.delete_profile(path, 3701))
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_rejects(self):
+        for bad in ({"port": 0}, {"port": 99999}, {"port": "3701"},
+                    {"port": 3701, "open": "sideways"},
+                    {"port": 3701, "open": "wildcard"},
+                    {"port": 3701, "scheme": "ftp"},
+                    {"port": 3701, "path": "login"},
+                    {"port": 3701, "spa": "yes"}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                portpage.validate_profile(bad)
+
+
+class TestLookup(unittest.TestCase):
     def test_public_url_for(self):
         reg = [{"id": "multica.web", "port": 3701}]
         self.assertEqual(portpage.public_url_for(

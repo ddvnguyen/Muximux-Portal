@@ -1,54 +1,69 @@
-# port-profiles.yaml — per-port open profiles for /ports/ (M-312).
+# port-profiles.yaml — per-port open profiles for /ports/ (M-312 respec).
 # Saved by the page (PUT /ports/v1/profile/<port>); hand-editing is fine too.
-# `open`: auto | public | tailnet | wildcard | embed. Ports without an entry
-# use built-in defaults (open: auto, path: /).
+# `open`: auto | tailnet | public | embed. `tailnet_url`: Tailscale Services
+# hostname (provisioned by the Owner step); empty until then. `spa`: needs
+# tailnet or public host, warns up front in the path proxy.
 profiles:
-  3701:   # Multica (SPA): public hostname in a new tab.
+  3701:
     label: Multica
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  9090:   # Cockpit: X-Frame-Options/CSP forbid embedding; public host only.
+    tailnet_url: ""
+    spa: true
+  9090:
     label: Cockpit
     scheme: https
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  3181:   # DSH-X (SPA): public hostname in a new tab.
+    tailnet_url: ""
+    spa: true
+  3181:
     label: DSH-X
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  3180:   # DSH-Z (SPA): public hostname in a new tab.
+    tailnet_url: ""
+    spa: true
+  3180:
     label: DSH-Z
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  4096:   # opencode (SPA): public hostname in a new tab.
+    tailnet_url: ""
+    spa: true
+  4096:
     label: opencode
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  4320:   # Freebuff Desktop (SPA): public hostname in a new tab.
+    tailnet_url: ""
+    spa: true
+  4320:
     label: Freebuff Desktop
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
-  3000:   # Grafana (SPA): public hostname in a new tab.
+    tailnet_url: ""
+    spa: true
+  3000:
     label: Grafana
     scheme: http
     path: /
-    open: public
-    newtab: true
+    open: auto
+    newtab: false
     pinned: false
+    tailnet_url: ""
+    spa: true

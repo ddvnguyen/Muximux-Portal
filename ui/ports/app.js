@@ -1,12 +1,13 @@
-/* Standalone /ports/ page (M-312). Search `port:N`/`:N`/`N`, bookmarkable
- * `#/<port>` hash (legacy `#port/N`, `#ports/N` redirect), per-port profile
- * form, tailnet probe, embed as last resort. No JS timers: one WebSocket per
- * session keeps the lease alive server-side (same as the /lease/ page). */
+/* Port manager page (M-312 respec). Real table of registry + dynamic ports
+ * with live status, saved profiles and active leases; apps render in the
+ * iframe pane (tailnet URL > public hostname via shim > path proxy).
+ * The palette (Ctrl/Cmd-K, portal-ext) is the primary open path; this page
+ * is for management. No JS timers: one WebSocket per session keeps leases
+ * alive server-side. */
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const sidKey = "portal.ports.session";
-const leaseKey = "portal.ports.lease";
 const probeKey = "portal.ports.tailnet";
 
 let sid = sessionStorage.getItem(sidKey);
@@ -17,123 +18,15 @@ if (!sid) {
 
 let probeOk = sessionStorage.getItem(probeKey) === "1";
 let probeDone = false;
-let current = null; // {port, decision}
+let current = null;
 let ws = null;
 
-function holdLease(id, port) {
-  sessionStorage.setItem(leaseKey, JSON.stringify({ id, port }));
-}
-function heldLease() {
-  try { return JSON.parse(sessionStorage.getItem(leaseKey) || "null"); }
-  catch { return null; }
-}
-function forgetLease() {
-  sessionStorage.removeItem(leaseKey);
-}
-
-function parseQuery(text) {
-  const m = /^\s*(?:port:|:)?(\d{1,5})\s*$/i.exec(text || "");
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
-}
-
-function parseHash() {
-  const raw = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
-  const [head, qs] = raw.split("?", 2);
-  const m = /^\/?(?:ports?\/)?(\d{1,5})\/?$/i.exec((head || "").trim());
-  if (!m) return null;
-  const port = Number(m[1]);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-  const overrides = {};
-  for (const [k, v] of new URLSearchParams(qs || "")) {
-    if (["open", "path", "scheme"].includes(k) && v) overrides[k] = v;
-  }
-  return { port, overrides };
-}
-
-function canonHash(port, overrides) {
-  let h = `#/${port}`;
-  const q = new URLSearchParams();
-  for (const k of ["open", "path", "scheme"]) {
-    if (overrides && overrides[k]) q.set(k, overrides[k]);
-  }
-  const s = q.toString();
-  return s ? `${h}?${s}` : h;
-}
-
 function showMsg(text, isErr) {
-  const el = $("msg");
-  el.textContent = text || "";
-  el.classList.toggle("err", !!isErr);
+  $("msg").textContent = text || "";
+  $("msg").classList.toggle("err", !!isErr);
 }
 
-/* -- search ----------------------------------------------------------- */
-
-let registry = null;
-async function loadRegistry() {
-  if (registry) return registry;
-  try {
-    const res = await fetch("/ports/v1/registry");
-    if (res.ok) registry = await res.json();
-  } catch { /* search still works for bare ports */ }
-  return registry || { entries: [] };
-}
-
-function renderResults(port, entries) {
-  const ul = $("results");
-  ul.textContent = "";
-  if (port == null) return;
-  const add = (label, hint, selPort) => {
-    const li = document.createElement("li");
-    li.setAttribute("role", "option");
-    li.tabIndex = 0;
-    li.textContent = label;
-    if (hint) {
-      const s = document.createElement("small");
-      s.textContent = hint;
-      li.append(s);
-    }
-    li.onclick = () => openPort(selPort, {});
-    li.onkeydown = (ev) => {
-      if (ev.key === "Enter") openPort(selPort, {});
-    };
-    ul.append(li);
-    return li;
-  };
-  const matches = (entries || []).filter((e) => e.port === port).slice(0, 4);
-  const first = add(`Open :${port}`, matches.length ? matches[0].title : "any port");
-  first.setAttribute("aria-selected", "true");
-  for (const m of matches) {
-    if (m.port === port) add(`${m.title} :${m.port}`, m.group, m.port);
-  }
-}
-
-$("q").addEventListener("input", async () => {
-  const port = parseQuery($("q").value);
-  if (port == null) { $("results").textContent = ""; return; }
-  const reg = await loadRegistry();
-  renderResults(port, reg.entries);
-});
-
-$("q").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") {
-    const port = parseQuery($("q").value);
-    if (port != null) {
-      ev.preventDefault();
-      openPort(port, {});
-    }
-  }
-});
-
-$("search").onsubmit = (ev) => {
-  ev.preventDefault();
-  const port = parseQuery($("q").value);
-  if (port == null) { showMsg("Type port:3701, :3701, 3701, or a service name.", true); return; }
-  openPort(port, {});
-};
-
-/* -- tailnet probe ---------------------------------------------------- */
+/* -- tailnet probe (respec: stays, but not part of the spike) ------------- */
 
 async function probeTailnet() {
   if (probeDone) return probeOk;
@@ -144,7 +37,6 @@ async function probeTailnet() {
     const t = setTimeout(() => ctl.abort(), 4000);
     await fetch(probe, { mode: "no-cors", cache: "no-store", signal: ctl.signal });
     clearTimeout(t);
-    // no-cors opaque = host answered (client is on the tailnet).
     probeOk = true;
   } catch {
     probeOk = false;
@@ -153,120 +45,211 @@ async function probeTailnet() {
   return probeOk;
 }
 
-/* -- open ------------------------------------------------------------- */
+/* -- manager table -------------------------------------------------------- */
 
-async function openPort(port, overrides) {
-  showMsg("");
+async function loadTable() {
+  let entries = [];
+  try {
+    const res = await fetch("/ports/v1/registry", { cache: "no-store" });
+    if (res.ok) entries = (await res.json()).entries || [];
+  } catch {
+    showMsg("Ports service unreachable — is portal-lease running?", true);
+    return;
+  }
+  const tb = $("rows");
+  tb.textContent = "";
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td></td><td class='num'></td><td class='st'></td>" +
+      "<td class='via'></td><td class='prof'></td><td class='lease'></td><td class='act'></td>";
+    const tds = tr.children;
+    tds[0].textContent = e.title || e.id;
+    tds[1].textContent = ":" + e.port;
+    tds[2].textContent = e.live ? "● live" : "○ down";
+    tds[2].classList.add(e.live ? "live" : "down");
+    tds[3].textContent = viaLabel(e);
+    tds[4].textContent = `${e.open || "auto"}${e.spa ? " · SPA" : ""}`;
+    const lease = e.lease;
+    tds[5].textContent = lease ? `leased (${lease.sessions} session${lease.sessions === 1 ? "" : "s"})` : "—";
+    const openBtn = document.createElement("button");
+    openBtn.textContent = "Open";
+    openBtn.onclick = () => openPort(e.port, {});
+    const profBtn = document.createElement("button");
+    profBtn.textContent = "Profile";
+    profBtn.onclick = () => { doOpen(e.port, {}, true); };
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "Close";
+    closeBtn.disabled = !lease;
+    closeBtn.onclick = async () => {
+      await fetch(`/lease/v1/lease/${lease.id}`, { method: "DELETE" });
+      loadTable();
+      if (current && current.port === e.port) hideViewer();
+    };
+    tds[6].append(openBtn, profBtn, closeBtn);
+    tb.append(tr);
+  }
+  if (!entries.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td colspan='7'>No registry ports found.</td>";
+    tb.append(tr);
+  }
+}
+
+function viaLabel(e) {
+  if (e.tailnet_url && probeOk) return "tailnet";
+  if (e.tailnet_url) return "tailnet?";
+  if (e.public) return "public";
+  return "proxy";
+}
+
+/* -- open in pane ---------------------------------------------------------- */
+
+function parseHash() {
+  const raw = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
+  const [head, qs] = raw.split("?", 2);
+  const m = /^\/?(?:ports?\/)?(\d{1,5})\/?$/i.exec((head || "").trim());
+  if (!m) return null;
+  const port = Number(m[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  const overrides = {};
+  for (const [k, v] of new URLSearchParams(qs || "")) {
+    if (["open", "path", "scheme", "tailnet_url"].includes(k) && v) overrides[k] = v;
+  }
+  return { port, overrides };
+}
+
+function canonHash(port, overrides) {
+  let h = `#/${port}`;
+  const q = new URLSearchParams();
+  for (const k of ["open", "path", "scheme", "tailnet_url"]) {
+    if (overrides && overrides[k]) q.set(k, overrides[k]);
+  }
+  const s = q.toString();
+  return s ? `${h}?${s}` : h;
+}
+
+function openPort(port, overrides) {
   if (location.hash !== canonHash(port, overrides)) {
     location.hash = canonHash(port, overrides);
     return; // hashchange handler does the open
   }
-  await doOpen(port, overrides);
+  doOpen(port, overrides, false);
 }
 
-async function doOpen(port, overrides) {
+async function doOpen(port, overrides, showForm) {
   current = { port, overrides: overrides || {} };
-  $("empty").hidden = true;
   $("viewer").hidden = false;
   $("vtitle").textContent = `:${port}`;
   $("vrefuse").hidden = true;
   $("vframe").hidden = true;
   $("vwarn").hidden = true;
   $("vvia").textContent = "opening…";
+  $("vpopout").hidden = true;
   showMsg("");
-
   await probeTailnet();
-  let res;
+  let body = null;
   try {
-    res = await fetch("/ports/v1/open", {
+    const res = await fetch("/ports/v1/open", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ port, session: sid, probe_ok: probeOk, ...current.overrides }),
     });
+    body = await res.json();
+    if ((body && body.action === "refuse") || res.status === 403) {
+      refuse(body.reason || body.error || "Port denied.");
+      return;
+    }
+    if (!body || body.error) {
+      refuse((body && (body.error + (body.detail ? `: ${body.detail}` : ""))) || `HTTP ${res.status}`);
+      return;
+    }
   } catch {
-    refuse(`Cannot reach the ports service.`);
+    refuse("ports service unreachable.");
     return;
   }
-  let body;
-  try { body = await res.json(); }
-  catch { body = null; }
-  if (!body) { refuse(`Bad response from the ports service (HTTP ${res.status}).`); return; }
-  if (body.action === "refuse" || res.status === 403) {
-    refuse(body.reason || body.error || "Port denied.");
-    return;
-  }
-  if (body.error) { refuse(body.error + (body.detail ? `: ${body.detail}` : "")); return; }
-
-  if (body.lease) holdLease(body.lease.id, port);
-  $("vvia").textContent = viaText(body);
+  // frame source: tailnet/public render through the shim (strips
+  // X-Frame-Options/CSP); the raw path proxy loads directly.
+  let src = body.url;
+  const directHosts = [];
+  try {
+    if (body.gateway === "proxy") src = body.url;
+    else if (body.url.startsWith("/")) src = body.url;
+    else src = `/ports/v1/shim?port=${port}&path=${encodeURIComponent(profilePath(body))}`;
+  } catch { src = body.url; }
+  $("vvia").textContent = `via ${body.gateway}${body.gateway === "proxy" ? " (path proxy)" : ""}`;
   if (body.warning) {
     $("vwarn").textContent = body.warning;
     $("vwarn").hidden = false;
   }
-  if (body.action === "new_tab") {
-    window.open(body.url, "_blank", "noopener");
-    showMsg(`Opened ${body.url} in a new tab.`);
-    $("vvia").textContent += " — new tab";
-    $("vnewtab").onclick = () => window.open(body.url, "_blank", "noopener");
-    $("vframe").hidden = true;
-  } else {
-    connectLeaseSocket();
-    $("vframe").src = body.url;
-    $("vframe").hidden = false;
-    $("vnewtab").onclick = () => window.open(body.url, "_blank", "noopener");
+  if (body.popout_url) {
+    $("vpopout").hidden = false;
+    $("vpopout").onclick = () => window.open(body.popout_url, "_blank", "noopener");
   }
-  loadProfile(port);
+  connectLeaseSocket(body.lease ? body.lease.id : null);
+  $("vframe").src = src;
+  $("vframe").hidden = false;
+  $("prof").hidden = !showForm;
+  $("vprofile").setAttribute("aria-expanded", String(!!showForm));
+  if (showForm || !$("pport").textContent || $("pport").textContent === String(port)) {
+    loadProfile(port);
+  }
 }
-function viaText(d) {
-  const gw = { none: "public host", tailnet: "tailnet", wildcard: "wildcard host", embed: "embedded" }[d.gateway] || d.gateway;
-  return `via ${gw}`;
+
+function profilePath(body) {
+  try {
+    const u = new URL(body.url, location.origin);
+    return u.pathname + u.search || "/";
+  } catch { return "/"; }
 }
 
 function refuse(reason) {
-  current = current || {};
-  $("empty").hidden = true;
   $("viewer").hidden = false;
-  $("vtitle").textContent = current.port ? `:${current.port}` : ":—";
+  $("vtitle").textContent = current && current.port ? `:${current.port}` : ":—";
   $("vvia").textContent = "";
   $("vrefuse").textContent = `Refused: ${reason}`;
   $("vrefuse").hidden = false;
   $("vframe").hidden = true;
-  forgetLease();
 }
 
-/* -- hash routing ----------------------------------------------------- */
+function hideViewer() {
+  $("viewer").hidden = true;
+  $("vframe").removeAttribute("src");
+  current = null;
+}
 
-function routeFromHash() {
+$("vclose").onclick = hideViewer;
+
+window.addEventListener("hashchange", () => {
   const parsed = parseHash();
-  if (!parsed) return;
-  doOpen(parsed.port, parsed.overrides);
-}
+  if (parsed) doOpen(parsed.port, parsed.overrides, false);
+});
 
-window.addEventListener("hashchange", routeFromHash);
-
-/* -- lease liveness socket (same pattern as /lease/) ------------------- */
+/* -- lease socket ---------------------------------------------------------- */
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/lease/v1/ws?session=${encodeURIComponent(sid)}`;
 }
 
-function connectLeaseSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+function connectLeaseSocket(leaseId) {
+  if (!leaseId) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    try { ws.send(JSON.stringify({ adopt: [leaseId] })); } catch { /* reconnect adopts */ }
+    return;
+  }
   ws = new WebSocket(wsUrl());
-  ws.onopen = () => {
-    const held = heldLease();
-    if (held) ws.send(JSON.stringify({ adopt: [held.id] }));
-  };
-  ws.onclose = () => { setTimeout(() => { ws = null; connectLeaseSocket(); }, 2000); };
+  ws.onopen = () => ws.send(JSON.stringify({ adopt: [leaseId] }));
+  ws.onclose = () => { ws = null; };
 }
 
-/* -- profile form ----------------------------------------------------- */
+/* -- profile form ------------------------------------------------------------ */
 
 $("vprofile").onclick = () => {
   const open = $("prof").hidden;
   $("prof").hidden = !open;
   $("vprofile").setAttribute("aria-expanded", String(open));
+  if (open && current) loadProfile(current.port);
 };
 
 async function loadProfile(port) {
@@ -278,60 +261,61 @@ async function loadProfile(port) {
     $("plabel").value = profile.label || "";
     $("pscheme").value = profile.scheme || "http";
     $("ppath").value = profile.path || "/";
+    $("ptailnet").value = profile.tailnet_url || "";
+    $("pspa").checked = !!profile.spa;
     $("popen").value = profile.open || "auto";
-    $("pnewtab").checked = profile.newtab !== false;
   } catch { /* form keeps defaults */ }
 }
 
 $("psave").onclick = async () => {
-  if (!current) return;
+  const port = current ? current.port : Number($("pport").textContent);
+  if (!port) return;
   const body = {
     label: $("plabel").value.trim(),
     scheme: $("pscheme").value,
     path: $("ppath").value.trim() || "/",
+    tailnet_url: $("ptailnet").value.trim(),
+    spa: $("pspa").checked,
     open: $("popen").value,
-    newtab: $("pnewtab").checked,
+    newtab: false,
     pinned: false,
   };
   try {
-    const res = await fetch(`/ports/v1/profile/${current.port}`, {
+    const res = await fetch(`/ports/v1/profile/${port}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await res.json();
     $("pmsg").textContent = res.ok ? "Saved." : `Error: ${data.error}`;
-    if (res.ok && data.profile) {
-      const ov = {};
-      if (data.profile.open !== "auto") ov.open = data.profile.open;
-      history.replaceState(null, "", canonHash(current.port, ov));
-    }
+    if (res.ok) loadTable();
   } catch {
     $("pmsg").textContent = "Save failed: service unreachable.";
   }
 };
 
 $("pdelete").onclick = async () => {
-  if (!current) return;
+  const port = current ? current.port : Number($("pport").textContent);
+  if (!port) return;
   try {
-    await fetch(`/ports/v1/profile/${current.port}`, { method: "DELETE" });
+    await fetch(`/ports/v1/profile/${port}`, { method: "DELETE" });
     $("pmsg").textContent = "Reset to defaults.";
-    loadProfile(current.port);
+    loadProfile(port);
+    loadTable();
   } catch {
     $("pmsg").textContent = "Reset failed.";
   }
 };
 
-/* -- boot ------------------------------------------------------------- */
+/* -- boot ------------------------------------------------------------------ */
 
-{
+(async function boot() {
+  await probeTailnet();
+  await loadTable();
   const parsed = parseHash();
   if (parsed) {
     const canon = canonHash(parsed.port, parsed.overrides);
-    if (location.hash !== canon) {
-      location.hash = canon; // hashchange fires doOpen; boot ends here
-    } else {
-      routeFromHash();
-    }
+    if (location.hash !== canon) location.hash = canon;
+    else doOpen(parsed.port, parsed.overrides, false);
   }
-}
+})();

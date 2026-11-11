@@ -115,20 +115,14 @@ class LeaseRegistry:
     """Thread-safe in-memory lease table. `mux_add`/`mux_remove`/`audit` are
     caller hooks: mux_add(name, port) -> None, mux_remove(name) -> None,
     audit(event, **fields) -> None. They run while the registry lock is NOT held.
-    Optional gateway hooks (M-312, no-ops by default): gw_add(port) creates
-    the tailnet/Caddy doors for `port`, gw_remove(port) drops them. create()
-    rolls back (gw_remove + mux_remove + table drop) when any hook fails, so
-    a half-open lease never survives; close()/sweep() always attempt
-    gw_remove for a removed lease and audit the outcome."""
-    def __init__(self, cfg, deny, now=time.time, mux_add=None, mux_remove=None, audit=None,
-                 gw_add=None, gw_remove=None):
+    create() rolls back (mux_remove + table drop) when mux_add fails, so a
+    half-open lease never survives."""
+    def __init__(self, cfg, deny, now=time.time, mux_add=None, mux_remove=None, audit=None):
         self.cfg = cfg
         self.deny = deny
         self._now = now
         self._mux_add = mux_add if mux_add is not None else (lambda name, port: None)
         self._mux_remove = mux_remove if mux_remove is not None else (lambda name: None)
-        self._gw_add = gw_add or (lambda port: None)
-        self._gw_remove = gw_remove or (lambda port: None)
         self._audit = audit or (lambda event, **f: None)
         self._lock = threading.Lock()
         self._by_id = {}
@@ -155,16 +149,11 @@ class LeaseRegistry:
             return snapshot, created
         try:
             self._mux_add(snapshot["name"], port)
-            self._gw_add(port)
         except Exception:
             with self._lock:
                 self._by_id.pop(snapshot["id"], None)
                 if self._by_port.get(port, None) is not None and self._by_port[port].id == snapshot["id"]:
                     self._by_port.pop(port, None)
-            try:
-                self._gw_remove(port)
-            except Exception:
-                pass
             try:
                 self._mux_remove(snapshot["name"])
             except Exception:
@@ -206,11 +195,6 @@ class LeaseRegistry:
                 return False
             self._by_port.pop(lease.port, None)
             snapshot = lease.to_json()
-        try:
-            self._gw_remove(snapshot["port"])
-        except Exception as e:
-            self._audit("gateway-remove-failed", port=snapshot["port"],
-                        lease_id=lease_id, reason=str(e)[:200])
         self._mux_remove(snapshot["name"])
         self._audit("close", port=snapshot["port"], lease_id=lease_id, reason=reason)
         return True
@@ -234,11 +218,6 @@ class LeaseRegistry:
                 self._by_port.pop(lease.port, None)
                 out.append((lid, lease.port, reason, lease.to_json()))
         for lid, port, reason, snapshot in out:
-            try:
-                self._gw_remove(port)
-            except Exception as e:
-                self._audit("gateway-remove-failed", port=port,
-                            lease_id=lid, reason=str(e)[:200])
             self._mux_remove(snapshot["name"])
             self._audit("close", port=port, lease_id=lid, reason=reason)
         return [(lid, port, reason) for lid, port, reason, _ in out]
@@ -251,11 +230,6 @@ class LeaseRegistry:
             self._by_port.clear()
             snapshots = [(l.id, l.port, l.name) for l in leases]
         for lid, port, name in snapshots:
-            try:
-                self._gw_remove(port)
-            except Exception as e:
-                self._audit("gateway-remove-failed", port=port,
-                            lease_id=lid, reason=str(e)[:200])
             self._mux_remove(name)
             self._audit("close", port=port, lease_id=lid, reason=reason)
         return [name for _, _, name in snapshots]

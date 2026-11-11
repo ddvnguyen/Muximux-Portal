@@ -161,26 +161,13 @@ class TestLeaseLifecycle(unittest.TestCase):
         self.assertEqual(leaselib.load_deny("/nonexistent"), {})
 
 
-class TestGatewayHooks(unittest.TestCase):
-    def test_gw_fail_rolls_back(self):
+class TestMuxRollback(unittest.TestCase):
+    def test_mux_fail_rolls_back(self):
         reg, mux, audit = make_registry()
-        reg._gw_add = lambda port: (_ for _ in ()).throw(ConnectionError("boom"))
+        reg._mux_add = lambda name, port: (_ for _ in ()).throw(ConnectionError("boom"))
         with self.assertRaises(ConnectionError):
             reg.create(4096, "s1")
         self.assertEqual(reg.active(), [])
         self.assertIn(("remove", "Lease :4096"), mux)
-
-    def test_gw_remove_on_close_and_sweep(self):
-        removed = []
-        reg, mux, audit = make_registry()
-        reg._gw_remove = removed.append
-        snap, _ = reg.create(4096, "s1")
-        self.assertTrue(reg.close(snap["id"], "test"))
-        self.assertEqual(removed, [4096])
-        snap, _ = reg.create(4097, "s1")
-        reg.session_closed("s1")
-        reg._now.advance(3600)
-        reg.sweep()
-        self.assertEqual(removed, [4096, 4097])
 if __name__ == "__main__":
     unittest.main()

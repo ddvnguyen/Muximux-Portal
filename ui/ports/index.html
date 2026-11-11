@@ -8,31 +8,31 @@
 </head>
 <body>
 <header class="top">
-  <h1>Ports</h1>
-  <p class="sub">Open any local port. Bookmarks like <code>#/3701</code> reload and share.</p>
-  <form id="search" autocomplete="off">
-    <input id="q" type="text" placeholder="port:3701 · :3701 · 3701 or name" autofocus
-           aria-label="port search" enterkeyhint="go">
-    <button type="submit">Open</button>
-  </form>
-  <ul id="results" class="results" role="listbox" aria-label="search results"></ul>
+  <h1>Local ports</h1>
+  <p class="sub">Tip: press Ctrl/Cmd-K anywhere in the portal and type
+  <code>port:3701</code> to open a port. Bookmarks like <code>#/3701</code>
+  reload and share. Only this page and the palette open ports — never a URL.</p>
   <p id="msg" class="msg" role="status"></p>
 </header>
-<main id="stage" class="stage">
-  <div id="empty" class="empty">
-    <p>Type a port above, or open <code>#/&lt;port&gt;</code> directly.</p>
-    <p class="hint">Examples: <a href="#/3701">Multica :3701</a> · <a href="#/9090">Cockpit :9090</a></p>
-  </div>
+<main class="stage">
+  <table id="ports" aria-label="local ports">
+    <thead><tr>
+      <th>App</th><th>Port</th><th>Status</th><th>Opens via</th>
+      <th>Saved profile</th><th>Lease</th><th>Actions</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="7">loading…</td></tr></tbody>
+  </table>
   <section id="viewer" class="viewer" hidden>
     <div class="bar">
       <strong id="vtitle">:—</strong>
       <span id="vvia" class="via"></span>
       <span id="vwarn" class="warn" hidden></span>
-      <button id="vnewtab" type="button">Open in new tab</button>
+      <button id="vpopout" type="button" hidden>Pop out</button>
       <button id="vprofile" type="button" aria-expanded="false">Profile</button>
+      <button id="vclose" type="button">Close</button>
     </div>
     <p id="vrefuse" class="refuse" hidden></p>
-    <iframe id="vframe" title="embedded port" hidden></iframe>
+    <iframe id="vframe" title="port view" hidden referrerpolicy="no-referrer"></iframe>
   </section>
   <section id="prof" class="prof" hidden>
     <h2>Profile for :<span id="pport">—</span></h2>
@@ -41,16 +41,17 @@
       <select id="pscheme"><option value="http">http</option><option value="https">https</option></select>
     </label>
     <label>Path <input id="ppath" type="text" placeholder="/" maxlength="200"></label>
+    <label>Tailnet URL (https://…ts.net/, empty until provisioned)
+      <input id="ptailnet" type="text" placeholder="" maxlength="200"></label>
+    <label class="check"><input id="pspa" type="checkbox"> SPA (needs tailnet or public host)</label>
     <label>Open mode
       <select id="popen">
-        <option value="auto">auto (tailnet → public → wildcard → embed)</option>
-        <option value="public">public (hostname, new tab)</option>
-        <option value="tailnet">tailnet (tailscale serve, new tab)</option>
-        <option value="wildcard">wildcard (p&lt;port&gt; hostname, new tab)</option>
-        <option value="embed">embed (path proxy here, may not render)</option>
+        <option value="auto">auto (tailnet → public → path proxy)</option>
+        <option value="tailnet">tailnet (service hostname, in pane)</option>
+        <option value="public">public (hostname, in pane)</option>
+        <option value="embed">path proxy (in pane, may not render)</option>
       </select>
     </label>
-    <label class="check"><input id="pnewtab" type="checkbox" checked> Open links in a new tab</label>
     <p class="row">
       <button id="psave" type="button">Save</button>
       <button id="pdelete" type="button">Reset to defaults</button>
