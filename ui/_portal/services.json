@@ -90,6 +90,15 @@
   "dynamic": false
  },
  {
+  "name": "dyn-40537",
+  "title": "opencode instance",
+  "group": "Live ports",
+  "port": 40537,
+  "desc": "dynamic",
+  "path": "/",
+  "dynamic": true
+ },
+ {
   "name": "dyn-49374",
   "title": "opencode instance",
   "group": "Live ports",
