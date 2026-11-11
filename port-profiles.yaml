@@ -1,0 +1,54 @@
+# port-profiles.yaml — per-port open profiles for /ports/ (M-312).
+# Saved by the page (PUT /ports/v1/profile/<port>); hand-editing is fine too.
+# `open`: auto | public | tailnet | wildcard | embed. Ports without an entry
+# use built-in defaults (open: auto, path: /).
+profiles:
+  3701:   # Multica (SPA): public hostname in a new tab.
+    label: Multica
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  9090:   # Cockpit: X-Frame-Options/CSP forbid embedding; public host only.
+    label: Cockpit
+    scheme: https
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  3181:   # DSH-X (SPA): public hostname in a new tab.
+    label: DSH-X
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  3180:   # DSH-Z (SPA): public hostname in a new tab.
+    label: DSH-Z
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  4096:   # opencode (SPA): public hostname in a new tab.
+    label: opencode
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  4320:   # Freebuff Desktop (SPA): public hostname in a new tab.
+    label: Freebuff Desktop
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false
+  3000:   # Grafana (SPA): public hostname in a new tab.
+    label: Grafana
+    scheme: http
+    path: /
+    open: public
+    newtab: true
+    pinned: false

@@ -11,6 +11,7 @@
 http://portal.ddvnguyen.com:3720 {
 	log
 	import routes/lease.inc
+	import routes/ports.inc
 	import routes/muximux.inc
 }
 

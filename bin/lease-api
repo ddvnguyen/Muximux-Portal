@@ -1,28 +1,30 @@
 #!/usr/bin/python3
-"""lease-api — session-bound open-any-port proxy (M-249, Muximux-based).
+"""ports service — standalone /ports/ page + session-bound gateways (M-312).
 
-M-246 proved Muximux adds proxied apps at runtime (POST /api/apps) and
-forwards websockets, so the rewrite uses Muximux: a lease is a Muximux app
-"Lease :<port>" (proxy: true) served at /proxy/lease-<port>/. No dynamic
-Caddy routes are created; the only Caddy change is the static /lease* route
-to this service.
+M-249 built the lease proxy (Muximux app "Lease :<port>" at
+/proxy/lease-<port>/). M-312 keeps it and adds, on the same service:
 
-Endpoints (bound to 127.0.0.1:3726; the outer gate is Cloudflare Access on
-portal.ddvnguyen.com, same as every other portal route):
-  GET  /lease/                     the lease UI (search box + active leases)
-  POST /lease/v1/lease {port}      open a lease (targets: 127.0.0.1 ONLY; the
-                                   host never comes from the request — no SSRF)
-  GET  /lease/v1/leases            active leases
-  DELETE /lease/v1/lease/<id>      close now (reason: closed by user)
-  GET  /lease/v1/ws?session=<sid>  the portal session WebSocket. Liveness is
-                                   the server's protocol-level ping (aiohttp
-                                   heartbeat); browsers answer it even in
-                                   background tabs, unlike JS timers.
+  page  GET /ports/ (+ /ports/app.js, /ports/style.css) — standalone UI:
+        search (`port:N`, `:N`, `N`), bookmarkable `#/<port>` hash, per-port
+        profile form, tailnet probe, embedded lease view as last resort.
+  API   GET /ports/v1/resolve?port=N[&probe=1] — how this port opens
+        (public > tailnet > wildcard > embed), without opening anything.
+        POST /ports/v1/open {port} — deny-check, then lease (Muximux app +
+        tailscale serve + Caddy p<port> route) sharing the lease lifecycle.
+        GET /ports/v1/profile/<port> — saved profile or defaults.
+        PUT /ports/v1/profile/<port> — save profile (validated).
+        DELETE /ports/v1/profile/<port> — drop back to defaults.
+  lease GET /lease/ + /lease/v1/* + WS — unchanged M-249 surface.
 
-Lifecycle: WS drops -> grace (lease.yaml) -> app removed; hard cap 8h always.
-Memory-only state: on start every leftover "Lease :" app is purged from
-Muximux, so leases never survive a portal restart. Every event is appended
-to logs/lease-audit.jsonl (time, port, lease, session, close reason).
+Resolution order for `auto`: client-on-tailnet (probe hit `probe_ok=1` and
+the host runs `tailscale serve`) > public-hosts.json hostname > Cloudflare
+`p<port>.ddvnguyen.com` host route (live only after the Owner adds the
+wildcard tunnel route + Access policy) > embedded path proxy with the
+"may not render" warning. A pinned profile mode skips the earlier steps.
+Targets are always 127.0.0.1:<port>; the host never comes from the request.
+
+State: leases are memory-only (restart purges Muximux apps, serve bindings
+and Caddy routes); profiles persist in port-profiles.yaml.
 """
 import asyncio
 import json
@@ -38,9 +40,14 @@ from aiohttp import WSMsgType, web
 HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "lib"))
 import leaselib  # noqa: E402
+import portpage  # noqa: E402
 
 UI_DIR = os.path.join(HERE, "ui", "lease")
+PORTS_UI_DIR = os.path.join(HERE, "ui", "ports")
+PROFILES_PATH = os.path.join(HERE, "port-profiles.yaml")
+PUBLIC_HOSTS_PATH = os.path.join(HERE, "public-hosts.json")
 APP_PREFIX = "Lease :"
+CADDY_ADMIN = "http://localhost:2022"
 
 
 def mux_api(base, method, path, body=None, timeout=5):
@@ -75,8 +82,32 @@ def make_mux_remove(base):
     return mux_remove
 
 
+def load_public_hosts(path=PUBLIC_HOSTS_PATH):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_registry_ports():
+    """[{id, port}] from ports.yaml + dynamic + registered (best effort)."""
+    try:
+        import portslib
+        reg = portslib.load_registry()
+        rows = portslib.merge(reg, portslib.load_dynamic(),
+                              portslib.load_registered(), set())
+        return [{"id": r.get("id"), "port": r.get("port")} for r in rows]
+    except Exception as e:
+        print(f"ports: registry load failed, public-host matching off: {e}",
+              file=sys.stderr)
+        return []
+
+
 def startup_purge(base, audit):
-    """Leases are memory-only: drop any Lease apps Muximux still remembers."""
+    """Leases are memory-only: drop any Lease apps Muximux still remembers,
+    plus their tailscale serve bindings and Caddy p<port> routes."""
     try:
         apps = mux_api(base, "GET", "/api/apps") or []
     except ConnectionError as e:
@@ -90,10 +121,55 @@ def startup_purge(base, audit):
                 n += 1
             except ConnectionError as e:
                 print(f"lease-api startup: purge {a['name']!r} failed: {e}", file=sys.stderr)
+    try:
+        gw_sweep()
+    except Exception as e:
+        print(f"ports startup: gateway sweep failed: {e}", file=sys.stderr)
     if n:
         audit("close", reason=f"lease-api restart purge ({n} stale app(s))")
     return n
 
+
+def gw_add(port):
+    """Create both gateway doors (best effort, independent)."""
+    errs = []
+    try:
+        portpage.tailscale_ensure(port)
+    except Exception as e:
+        errs.append(f"tailscale: {e}")
+    try:
+        server = portpage.server_name(CADDY_ADMIN)
+        portpage.caddy_ensure_port_route(CADDY_ADMIN, server, port)
+    except Exception as e:
+        errs.append(f"caddy: {e}")
+    if errs and not portpage.tailscale_available():
+        # Neither door may exist (wildcard route without owner DNS step);
+        # the lease still opens — resolution falls back to embed.
+        print(f"ports gw_add :{port} degraded ({'; '.join(errs)})", file=sys.stderr)
+
+
+def gw_remove(port):
+    """Drop both gateway doors (best effort each)."""
+    for op in (portpage.tailscale_remove,
+               lambda p: portpage.caddy_remove_port_route(
+                   CADDY_ADMIN, portpage.server_name(CADDY_ADMIN), p)):
+        try:
+            op(port)
+        except Exception as e:
+            print(f"ports gw_remove :{port}: {e}", file=sys.stderr)
+
+
+def gw_sweep():
+    """Startup: remove serve bindings / p<port> routes with no live lease."""
+    live = {l["port"] for l in []}
+    try:
+        server = portpage.server_name(CADDY_ADMIN)
+    except Exception:
+        return
+    for _, host in portpage.stale_port_routes(CADDY_ADMIN, server, live):
+        m = __import__("re").fullmatch(r"p(\d{1,5})\.ddvnguyen\.com", host)
+        if m:
+            gw_remove(int(m.group(1)))
 
 class LeaseService:
     def __init__(self, registry, cfg):
@@ -115,12 +191,166 @@ class LeaseService:
         return web.FileResponse(os.path.join(UI_DIR, "index.html"),
                                 headers={"Cache-Control": "no-store"})
 
-    async def app_js(self, request):
-        return web.FileResponse(os.path.join(UI_DIR, "app.js"),
+    async def ports_index(self, request):
+        return web.FileResponse(os.path.join(PORTS_UI_DIR, "index.html"),
                                 headers={"Cache-Control": "no-store"})
 
-    async def root_redirect(self, request):
-        raise web.HTTPFound("/lease/")
+    async def ports_asset(self, request):
+        name = request.match_info["name"]
+        if name not in ("app.js", "style.css"):
+            return web.json_response({"error": "not found"}, status=404)
+        ctype = "text/javascript" if name.endswith(".js") else "text/css"
+        return web.FileResponse(os.path.join(PORTS_UI_DIR, name),
+                                headers={"Cache-Control": "no-store",
+                                         "Content-Type": ctype})
+
+    def _resolve(self, port, probe_ok=False, overrides=None):
+        overrides = overrides or {}
+        try:
+            port = int(port)
+            portpage.check_port_int(port)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "port must be 1..65535"}, status=400)
+        profiles = portpage.load_profiles(PROFILES_PATH)
+        profile = profiles.get(port, portpage.default_profile(port))
+        for k in ("open", "path", "scheme"):
+            if overrides.get(k):
+                profile = dict(profile)
+                profile[k] = overrides[k]
+        try:
+            self.registry.deny and portpage.check_port_int(port)
+            if port in self.registry.deny:
+                return web.json_response(
+                    {"ok": False, "action": "refuse",
+                     "reason": self.registry.deny[port]}, status=403)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        public = portpage.public_url_for(port, load_public_hosts(),
+                                         load_registry_ports())
+        result = portpage.resolve(
+            port, public_url=public,
+            tailnet_reachable=bool(probe_ok),
+            serve_ok=portpage.tailscale_available(),
+            wildcard_live=self._wildcard_live(),
+            profile=profile, overrides=overrides)
+        result["port"] = port
+        result["profile"] = profile
+        return web.json_response(result)
+
+    def _wildcard_live(self):
+        try:
+            server = portpage.server_name(CADDY_ADMIN)
+            routes = portpage.list_host_routes(CADDY_ADMIN, server)
+        except Exception:
+            return False
+        return any(h.startswith("p") and h.endswith(".ddvnguyen.com")
+                   for _, hosts, _ in routes for h in hosts)
+
+    async def ports_resolve(self, request):
+        probe_ok = request.query.get("probe_ok") == "1"
+        overrides = {k: request.query[k] for k in ("open", "path", "scheme")
+                     if request.query.get(k)}
+        return self._resolve(request.query.get("port"), probe_ok, overrides)
+
+    async def ports_open(self, request):
+        try:
+            body = json.loads(await request.text() or "{}")
+        except json.JSONDecodeError:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        try:
+            port = int(body.get("port"))
+            portpage.check_port_int(port)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "port must be 1..65535"}, status=400)
+        if body.get("session"):
+            session = body["session"]
+        else:
+            session = body.get("sid") or request.query.get("session") or "anonymous"
+        probe_ok = body.get("probe_ok") in (True, 1, "1")
+        overrides = {k: body[k] for k in ("open", "path", "scheme") if body.get(k)}
+        profiles = portpage.load_profiles(PROFILES_PATH)
+        profile = profiles.get(port, portpage.default_profile(port))
+        if port in self.registry.deny:
+            return web.json_response(
+                {"ok": False, "action": "refuse",
+                 "reason": self.registry.deny[port]}, status=403)
+        public = portpage.public_url_for(port, load_public_hosts(),
+                                         load_registry_ports())
+        decision = portpage.resolve(
+            port, public_url=public,
+            tailnet_reachable=bool(probe_ok),
+            serve_ok=portpage.tailscale_available(),
+            wildcard_live=self._wildcard_live(),
+            profile={**profile, **overrides}, overrides=overrides)
+        if not decision["ok"]:
+            return web.json_response({**decision, "port": port})
+        if decision["gateway"] in ("tailnet", "wildcard", "embed"):
+            try:
+                lease, _ = self.registry.create(port, session or "anonymous")
+                decision["lease"] = lease
+            except leaselib.PortDenied as e:
+                return web.json_response(
+                    {"ok": False, "action": "refuse", "reason": str(e)}, status=403)
+            except leaselib.LeaseError as e:
+                return web.json_response({"error": str(e)}, status=400)
+            except (ConnectionError, RuntimeError) as e:
+                return web.json_response(
+                    {"error": "gateway failed", "detail": str(e)[:200]}, status=502)
+            await self.broadcast()
+        return web.json_response({**decision, "port": port})
+
+    async def ports_profile_get(self, request):
+        try:
+            port = int(request.match_info["port"])
+            portpage.check_port_int(port)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "port must be 1..65535"}, status=400)
+        profiles = portpage.load_profiles(PROFILES_PATH)
+        return web.json_response(
+            {"profile": profiles.get(port, portpage.default_profile(port))})
+
+    async def ports_profile_put(self, request):
+        try:
+            port = int(request.match_info["port"])
+            portpage.check_port_int(port)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "port must be 1..65535"}, status=400)
+        try:
+            body = json.loads(await request.text() or "{}")
+        except json.JSONDecodeError:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        profile = dict(body)
+        profile["port"] = port
+        try:
+            saved = portpage.save_profile(PROFILES_PATH, profile)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        return web.json_response({"profile": saved})
+
+    async def ports_profile_delete(self, request):
+        try:
+            port = int(request.match_info["port"])
+            portpage.check_port_int(port)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "port must be 1..65535"}, status=400)
+        return web.json_response(
+            {"deleted": portpage.delete_profile(PROFILES_PATH, port)})
+    async def ports_registry(self, request):
+        """Merged registry view for the search box (read-only, best effort)."""
+        try:
+            import portslib
+            reg = portslib.load_registry()
+            rows = portslib.merge(reg, portslib.load_dynamic(),
+                                  portslib.load_registered(), set())
+            entries = [{"id": r.get("id"), "port": r.get("port"),
+                        "title": (r.get("portal") or {}).get("title") or r.get("id"),
+                        "group": r.get("app")}
+                       for r in rows
+                       if (r.get("portal") or {}).get("tab") in (True, "auto")]
+        except Exception as e:
+            entries = []
+            print(f"ports registry read failed: {e}", file=sys.stderr)
+        return web.json_response({"entries": entries})
 
     async def open_lease(self, request):
         try:
@@ -203,7 +433,8 @@ def main():
     print(f"lease-api: startup purge removed {n} stale Lease app(s)", flush=True)
 
     registry = leaselib.LeaseRegistry(cfg, deny, mux_add=make_mux_add(base, cfg["lease_group"]),
-                                      mux_remove=make_mux_remove(base), audit=audit)
+                                      mux_remove=make_mux_remove(base), audit=audit,
+                                      gw_add=gw_add, gw_remove=gw_remove)
     svc = LeaseService(registry, cfg)
 
     app = web.Application(client_max_size=16 * 1024)
@@ -216,6 +447,14 @@ def main():
         web.get("/lease/v1/leases", svc.list_leases),
         web.delete("/lease/v1/lease/{id}", svc.close_lease),
         web.get("/lease/v1/ws", svc.session_ws),
+        web.get("/ports/", svc.ports_index),
+        web.get("/ports/{name}", svc.ports_asset),
+        web.get("/ports/v1/resolve", svc.ports_resolve),
+        web.get("/ports/v1/registry", svc.ports_registry),
+        web.post("/ports/v1/open", svc.ports_open),
+        web.get("/ports/v1/profile/{port}", svc.ports_profile_get),
+        web.put("/ports/v1/profile/{port}", svc.ports_profile_put),
+        web.delete("/ports/v1/profile/{port}", svc.ports_profile_delete),
     ])
     async def _start_sweep(_app):
         # MUST NOT return the Task: on_startup awaits each handler's return

@@ -60,9 +60,10 @@ def desired(mode):
     if os.path.exists(extra):
         for e in json.load(open(extra)):
             add(e["name"], GROUP.get(e.get("group", "system"), e.get("group")), e["port"], e.get("scheme", "http"))
-    # M-249: the lease UI page (search box for any port), served by lease-api.
+    # M-312: the ports page is standalone (/ports/, served by lease-api);
+    # Muximux holds at most one link tab to it, never the ports themselves.
     if "Ports" not in seen:
-        apps.append({"name": "Ports", "url": "/lease/", "group": "System", "enabled": True,
+        apps.append({"name": "Ports", "url": "/ports/", "group": "System", "enabled": True,
                      "open_mode": "iframe", "proxy": False, "proxy_skip_tls_verify": True})
         seen.add("Ports")
     return apps
