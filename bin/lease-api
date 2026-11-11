@@ -110,10 +110,13 @@ def load_extra_ports():
     """[{name, port}] from extra-apps.json (Cockpit lives here, not registry)."""
     try:
         with open(os.path.join(HERE, "extra-apps.json")) as f:
-            return [{"name": e.get("name"), "port": e.get("port")}
-                    for e in json.load(f)]
+            data = json.load(f)
     except (OSError, ValueError):
         return []
+    return [{"name": e.get("name"), "port": e.get("port"),
+             "title": e.get("name"), "group": e.get("group", "system"),
+             "scheme": e.get("scheme", "http")}
+            for e in data if isinstance(e, dict) and e.get("port")]
 
 
 def startup_purge(base, audit):
@@ -367,6 +370,12 @@ class LeaseService:
                         "group": r.get("app")}
                        for r in rows
                        if (r.get("portal") or {}).get("tab") in (True, "auto")]
+            seen = {e["port"] for e in entries}
+            for e in load_extra_ports():
+                if e["port"] not in seen:
+                    entries.append({"id": e["name"], "port": e["port"],
+                                    "title": e["title"], "group": e["group"]})
+                    seen.add(e["port"])
         except Exception as e:
             entries = []
             print(f"ports registry read failed: {e}", file=sys.stderr)
