@@ -33,10 +33,15 @@ def host_of(p):
 def desired(mode):
     ports = json.loads(subprocess.check_output([os.path.join(HERE, "bin", "ports"), "list", "--json"]))
     apps, seen = [], set()
-    def add(name, group, port, scheme="http", host="127.0.0.1"):
+    pf = os.path.join(HERE, "public-hosts.json")
+    public = json.load(open(pf)) if os.path.exists(pf) else {}
+    def add(name, group, port, scheme="http", host="127.0.0.1", key=None):
         if name in seen: return
         seen.add(name)
-        if mode == "proxy":
+        if mode == "proxy" and (key or name) in public:
+            # has its own Cloudflare hostname: open natively (websocket-heavy apps break under /proxy/<slug>/)
+            a = {"name": name, "url": public[key or name], "group": group, "enabled": True, "open_mode": "new_tab", "proxy": False}
+        elif mode == "proxy":
             a = {"name": name, "url": f"{scheme}://{host}:{port}", "group": group, "enabled": True,
                  "open_mode": "iframe", "proxy": True, "proxy_skip_tls_verify": True}
         else:
@@ -48,7 +53,7 @@ def desired(mode):
         if tab not in (True, "auto"): continue
         title = (p.get("portal") or {}).get("title") or p["id"]
         name = title if p.get("source") == "static" else f"{title} :{p['port']}"
-        add(name, GROUP.get(p["app"], p["app"].title()), p["port"], host=host_of(p))
+        add(name, GROUP.get(p["app"], p["app"].title()), p["port"], host=host_of(p), key=p["id"])
     extra = os.path.join(HERE, "extra-apps.json")
     if os.path.exists(extra):
         for e in json.load(open(extra)):
