@@ -68,6 +68,8 @@ def main():
         elif any(h.get(k) != v for k, v in w.items()): ops.append(("PUT", "/api/app/" + urllib.parse.quote(n), {**h, **w}, n))
     for n in have:
         if n not in want: ops.append(("DELETE", "/api/app/" + urllib.parse.quote(n), None, n))
+    order = {"DELETE": 0, "PUT": 1, "POST": 2}
+    ops.sort(key=lambda o: order[o[0]])  # deletes first: Muximux rejects two apps with the same proxy slug
     for m, path, body, n in ops:
         print(("would " if a.dry_run else "") + f"{m} {n}")
         if not a.dry_run: api(a.base, m, path, body)
