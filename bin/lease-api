@@ -29,6 +29,7 @@ and Caddy routes); profiles persist in port-profiles.yaml.
 import asyncio
 import json
 import os
+import re
 import secrets
 import sys
 import urllib.error
@@ -102,6 +103,16 @@ def load_registry_ports():
     except Exception as e:
         print(f"ports: registry load failed, public-host matching off: {e}",
               file=sys.stderr)
+        return []
+
+
+def load_extra_ports():
+    """[{name, port}] from extra-apps.json (Cockpit lives here, not registry)."""
+    try:
+        with open(os.path.join(HERE, "extra-apps.json")) as f:
+            return [{"name": e.get("name"), "port": e.get("port")}
+                    for e in json.load(f)]
+    except (OSError, ValueError):
         return []
 
 
@@ -191,6 +202,13 @@ class LeaseService:
         return web.FileResponse(os.path.join(UI_DIR, "index.html"),
                                 headers={"Cache-Control": "no-store"})
 
+    async def app_js(self, request):
+        return web.FileResponse(os.path.join(UI_DIR, "app.js"),
+                                headers={"Cache-Control": "no-store"})
+
+    async def root_redirect(self, request):
+        raise web.HTTPFound("/lease/")
+
     async def ports_index(self, request):
         return web.FileResponse(os.path.join(PORTS_UI_DIR, "index.html"),
                                 headers={"Cache-Control": "no-store"})
@@ -226,7 +244,8 @@ class LeaseService:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         public = portpage.public_url_for(port, load_public_hosts(),
-                                         load_registry_ports())
+                                         load_registry_ports(),
+                                         load_extra_ports())
         result = portpage.resolve(
             port, public_url=public,
             tailnet_reachable=bool(probe_ok),
@@ -243,7 +262,7 @@ class LeaseService:
             routes = portpage.list_host_routes(CADDY_ADMIN, server)
         except Exception:
             return False
-        return any(h.startswith("p") and h.endswith(".ddvnguyen.com")
+        return any(re.fullmatch(r"p\d{1,5}\.ddvnguyen\.com", h)
                    for _, hosts, _ in routes for h in hosts)
 
     async def ports_resolve(self, request):
@@ -275,7 +294,8 @@ class LeaseService:
                 {"ok": False, "action": "refuse",
                  "reason": self.registry.deny[port]}, status=403)
         public = portpage.public_url_for(port, load_public_hosts(),
-                                         load_registry_ports())
+                                         load_registry_ports(),
+                                         load_extra_ports())
         decision = portpage.resolve(
             port, public_url=public,
             tailnet_reachable=bool(probe_ok),

@@ -217,6 +217,14 @@ class TestGateways(unittest.TestCase):
             "https://multica.ddvnguyen.com")
         self.assertIsNone(portpage.public_url_for(
             4321, {"multica.web": "https://multica.ddvnguyen.com"}, reg))
+        self.assertEqual(portpage.public_url_for(
+            9090, {"Cockpit": "https://server.ddvnguyen.com"}, reg,
+            [{"name": "Cockpit", "port": 9090}]),
+            "https://server.ddvnguyen.com")
+
+    def test_pinned_public_without_hostname_refuses(self):
+        r = portpage.resolve(4321, profile={"open": "public"})
+        self.assertEqual(r["action"], "refuse")
 
 
 if __name__ == "__main__":

@@ -254,7 +254,7 @@ def resolve(port, mode="auto", public_url=None, tailnet_reachable=False,
     if mode == "public":
         if public_url:
             return new_tab(public_url, "none")
-        mode = "auto"  # pinned public with no hostname: fall through
+        return refuse(f"no public hostname is registered for :{port}")
     if mode == "auto" and tailnet_reachable and serve_ok:
         return new_tab(tailnet_url(port), "tailnet")
     if mode in ("auto", "public") and public_url:
@@ -270,13 +270,16 @@ def resolve(port, mode="auto", public_url=None, tailnet_reachable=False,
 
 # ---------------------------------------------------------------- gateways
 
-def public_url_for(port, public_hosts, registry_ports):
-    """public-hosts.json value for `port`, via registry id or extra app name."""
-    by_id = {}
-    for entry in registry_ports:
-        by_id.setdefault(entry.get("id"), entry)
+def public_url_for(port, public_hosts, registry_ports, extra_ports=None):
+    """public-hosts.json value for `port`, via registry id or extra app name.
+    (Cockpit lives in extra-apps.json, not the registry.)"""
+    by_key = {}
+    for entry in registry_ports or []:
+        by_key.setdefault(entry.get("id"), entry)
+    for entry in extra_ports or []:
+        by_key.setdefault(entry.get("name"), {"port": entry.get("port")})
     for key, url in (public_hosts or {}).items():
-        entry = by_id.get(key)
+        entry = by_key.get(key)
         if entry and entry.get("port") == port:
             return url
     return None
