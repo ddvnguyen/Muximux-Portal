@@ -1,0 +1,77 @@
+#!/usr/bin/python3 -I
+"""portal-muximux-sync (M-195/M-237): make a Muximux instance mirror the port registry.
+
+  portal-muximux-sync [--base URL] [--mode proxy|tailnet] [--dry-run]
+
+Source of truth: `bin/ports list --json` (portal.tab true|auto) + extra-apps.json.
+mode proxy   : apps reachable at http://127.0.0.1:PORT, embedded via Muximux /proxy/<slug>/ (Cloudflare door).
+mode tailnet : apps opened at https://<node>.ts.net:PORT (Tailscale Serve door), new tab.
+Reconciles through the Muximux REST API (POST/PUT/DELETE /api/app[s]); idempotent. Auth must be 'none' (Cloudflare Access is the gate).
+"""
+import argparse, json, os, subprocess, sys, urllib.request, urllib.error
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TS_HOST = "ddv-server-00.zubron-denebola.ts.net"
+GROUP = {"dsh": "DSH", "moct": "MOCT", "multica": "Multica", "mmx": "MMX", "agents": "Agents",
+         "freebuff": "Freebuff", "hydra": "Hydra", "system": "System"}
+
+def api(base, method, path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"{method} {path} -> {e.code} {e.read()[:200]!r}")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"{base} unreachable: {e.reason}")
+
+def host_of(p):
+    b = str(p.get("bind") or "")
+    return b if b and b not in ("*", "0.0.0.0", "::", "127.0.0.1", "localhost") else "127.0.0.1"
+
+def desired(mode):
+    ports = json.loads(subprocess.check_output([os.path.join(HERE, "bin", "ports"), "list", "--json"]))
+    apps, seen = [], set()
+    def add(name, group, port, scheme="http", host="127.0.0.1"):
+        if name in seen: return
+        seen.add(name)
+        if mode == "proxy":
+            a = {"name": name, "url": f"{scheme}://{host}:{port}", "group": group, "enabled": True,
+                 "open_mode": "iframe", "proxy": True, "proxy_skip_tls_verify": True}
+        else:
+            a = {"name": name, "url": f"https://{TS_HOST}:{port}", "group": group, "enabled": True,
+                 "open_mode": "new_tab", "proxy": False}
+        apps.append(a)
+    for p in ports:
+        tab = (p.get("portal") or {}).get("tab")
+        if tab not in (True, "auto"): continue
+        title = (p.get("portal") or {}).get("title") or p["id"]
+        name = title if p.get("source") == "static" else f"{title} :{p['port']}"
+        add(name, GROUP.get(p["app"], p["app"].title()), p["port"], host=host_of(p))
+    extra = os.path.join(HERE, "extra-apps.json")
+    if os.path.exists(extra):
+        for e in json.load(open(extra)):
+            add(e["name"], GROUP.get(e.get("group", "system"), e.get("group")), e["port"], e.get("scheme", "http"))
+    return apps
+
+def main():
+    ap = argparse.ArgumentParser(); ap.add_argument("--base", default="http://127.0.0.1:45001")
+    ap.add_argument("--mode", choices=["proxy", "tailnet"], default="proxy"); ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    want = {x["name"]: x for x in desired(a.mode)}
+    have = {x["name"]: x for x in (api(a.base, "GET", "/api/apps") or [])}
+    ops = []
+    for n, w in want.items():
+        h = have.get(n)
+        if h is None: ops.append(("POST", "/api/apps", w, n))
+        elif any(h.get(k) != v for k, v in w.items()): ops.append(("PUT", "/api/app/" + urllib.parse.quote(n), {**h, **w}, n))
+    for n in have:
+        if n not in want: ops.append(("DELETE", "/api/app/" + urllib.parse.quote(n), None, n))
+    for m, path, body, n in ops:
+        print(("would " if a.dry_run else "") + f"{m} {n}")
+        if not a.dry_run: api(a.base, m, path, body)
+    print(f"mode={a.mode} desired={len(want)} existing={len(have)} changes={len(ops)}")
+
+import urllib.parse
+if __name__ == "__main__": main()

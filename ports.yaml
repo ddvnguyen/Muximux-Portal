@@ -82,7 +82,7 @@ static:
     lane: z
     role: web
     port: 3180
-    bind: 0.0.0.0
+    bind: 10.88.0.1      # dsh-z binds only the podman bridge address, not loopback
     unit: dsh-z.service
     health: http://127.0.0.1:3180/
     portal: {title: DSH-Z, tab: true}
@@ -204,10 +204,10 @@ static:
     app: hydra
     lane: none
     role: prom
-    port: 9090
+    port: 9091            # host side of infra-prometheus (:9090 on the host is Cockpit)
     bind: "*"
     unit: ""
-    health: http://127.0.0.1:9090/
+    health: http://127.0.0.1:9091/-/healthy
     portal: {title: Prometheus, tab: true}
   - id: hydra.web          # hydra-dashboard.service; unit currently inactive
     app: hydra
