@@ -145,7 +145,7 @@ def startup_purge(base, audit):
 
 
 def gw_add(port):
-    """Create both gateway doors (best effort, independent)."""
+    """Create both gateway doors (best effort, independent, always logged)."""
     errs = []
     try:
         portpage.tailscale_ensure(port)
@@ -156,9 +156,10 @@ def gw_add(port):
         portpage.caddy_ensure_port_route(CADDY_ADMIN, server, port)
     except Exception as e:
         errs.append(f"caddy: {e}")
-    if errs and not portpage.tailscale_available():
-        # Neither door may exist (wildcard route without owner DNS step);
-        # the lease still opens — resolution falls back to embed.
+    if errs:
+        # Degraded but not fatal: the lease still opens, resolution falls
+        # back (tailnet needs the owner operator step; wildcard needs the
+        # owner DNS + Access step; embed always works).
         print(f"ports gw_add :{port} degraded ({'; '.join(errs)})", file=sys.stderr)
 
 
@@ -175,13 +176,12 @@ def gw_remove(port):
 
 def gw_sweep():
     """Startup: remove serve bindings / p<port> routes with no live lease."""
-    live = {l["port"] for l in []}
     try:
         server = portpage.server_name(CADDY_ADMIN)
     except Exception:
         return
-    for _, host in portpage.stale_port_routes(CADDY_ADMIN, server, live):
-        m = __import__("re").fullmatch(r"p(\d{1,5})\.ddvnguyen\.com", host)
+    for _, host in portpage.stale_port_routes(CADDY_ADMIN, server, set()):
+        m = re.fullmatch(r"p(\d{1,5})\.ddvnguyen\.com", host)
         if m:
             gw_remove(int(m.group(1)))
 
@@ -238,14 +238,10 @@ class LeaseService:
             if overrides.get(k):
                 profile = dict(profile)
                 profile[k] = overrides[k]
-        try:
-            self.registry.deny and portpage.check_port_int(port)
-            if port in self.registry.deny:
-                return web.json_response(
-                    {"ok": False, "action": "refuse",
-                     "reason": self.registry.deny[port]}, status=403)
-        except ValueError as e:
-            return web.json_response({"error": str(e)}, status=400)
+        if port in self.registry.deny:
+            return web.json_response(
+                {"ok": False, "action": "refuse",
+                 "reason": self.registry.deny[port]}, status=403)
         public = portpage.public_url_for(port, load_public_hosts(),
                                          load_registry_ports(),
                                          load_extra_ports())
