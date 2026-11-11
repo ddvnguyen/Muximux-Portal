@@ -217,7 +217,6 @@ async function doOpen(port, overrides) {
   }
   loadProfile(port);
 }
-
 function viaText(d) {
   const gw = { none: "public host", tailnet: "tailnet", wildcard: "wildcard host", embed: "embedded" }[d.gateway] || d.gateway;
   return `via ${gw}`;
@@ -325,12 +324,14 @@ $("pdelete").onclick = async () => {
 
 /* -- boot ------------------------------------------------------------- */
 
-if (/^\/?(?:ports?\/)?\d{1,5}\/?(\?.*)?$/.test(
-    (location.hash.startsWith("#") ? location.hash.slice(1) : location.hash).trim())) {
-  routeFromHash();
-} else if (location.hash === "#port" || location.hash.startsWith("#port/") ||
-           location.hash.startsWith("#ports/")) {
-  // legacy Owner-typed forms redirect to the canonical #/<port> shape
+{
   const parsed = parseHash();
-  if (parsed) location.hash = canonHash(parsed.port, parsed.overrides);
+  if (parsed) {
+    const canon = canonHash(parsed.port, parsed.overrides);
+    if (location.hash !== canon) {
+      location.hash = canon; // hashchange fires doOpen; boot ends here
+    } else {
+      routeFromHash();
+    }
+  }
 }

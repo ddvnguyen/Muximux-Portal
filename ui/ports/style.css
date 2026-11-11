@@ -4,11 +4,8 @@ body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem 3rem; }
 .top h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
 .sub { color: #888; margin: 0 0 .75rem; }
 #search { display: flex; gap: .5rem; }
-#q { flex: 1; padding: .5rem .7rem; font-size: 1rem; }
-button { padding: .5rem .9rem; cursor: pointer; }
-.results { list-style: none; margin: .4rem 0 0; padding: 0; }
 .results li { border: 1px solid #8884; border-radius: 6px; padding: .5rem .7rem;
-  margin-bottom: .35rem; cursor: pointer; }
+  margin-bottom: .35rem; cursor: pointer; overflow-wrap: anywhere; }
 .results li[aria-selected="true"] { outline: 2px solid currentColor; }
 .results li small { color: #888; margin-left: .5rem; }
 .msg { min-height: 1.4em; color: #888; }
