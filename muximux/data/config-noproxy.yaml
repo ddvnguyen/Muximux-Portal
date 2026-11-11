@@ -1,0 +1,44 @@
+server:
+  listen: "127.0.0.1:45001"
+  title: "Muximux spike (M-246)"
+  log_level: info
+auth:
+  method: none
+groups:
+  - name: Agents
+    order: 1
+  - name: MOCT
+    order: 2
+  - name: System
+    order: 3
+apps:
+  - name: opencode
+    url: http://127.0.0.1:4096
+    group: Agents
+    open_mode: iframe
+    proxy: false
+    proxy_skip_tls_verify: true
+  - name: dsh-x
+    url: http://127.0.0.1:3181
+    group: MOCT
+    open_mode: iframe
+    proxy: false
+    proxy_skip_tls_verify: true
+  - name: multica
+    url: http://127.0.0.1:3701
+    group: MOCT
+    open_mode: iframe
+    proxy: false
+    proxy_skip_tls_verify: true
+  - name: freebuff
+    url: http://127.0.0.1:4320
+    group: Agents
+    open_mode: iframe
+    proxy: false
+    proxy_skip_tls_verify: true
+  - name: cockpit
+    url: https://127.0.0.1:9090
+    group: System
+    open_mode: iframe
+    proxy: false
+    proxy_skip_tls_verify: true
