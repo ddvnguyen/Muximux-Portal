@@ -1,0 +1,70 @@
+#!/usr/bin/python3 -I
+"""portal-publish <name>...  — make <name>.ddvnguyen.com reachable: DNS CNAME + tunnel ingress -> portal router + Access app 'Portal services'.
+Idempotent. Uses the cf CLI (OAuth login). Tunnel config is read-modify-write; a backup is kept in cf-backups/."""
+import json, subprocess, sys, time, os
+DOMAIN, TUNNEL = "ddvnguyen.com", "0cf709cf-5d1b-4710-a471-1a9d415aa55b"
+ORIGIN = "http://host.containers.internal:3720"
+ADMIN_POLICY, IDP, APP_NAME = "daea32e3-c1e9-4c39-8de0-2f979fc9de94", "770dc352-8ab4-4f58-8d5e-e9deca855e94", "Portal services"
+ROOT = "/mnt/workspace/portal"
+
+def cf(*args):
+    p = subprocess.run(["cf", *args], capture_output=True, text=True)
+    out = p.stdout
+    i = min([x for x in (out.find("{"), out.find("[")) if x >= 0], default=-1)
+    if p.returncode or i < 0:
+        sys.exit(f"cf {' '.join(args[:4])} failed: {(p.stdout+p.stderr)[-400:]}")
+    d = json.loads(out[i:])
+    return d.get("result", d) if isinstance(d, dict) else d
+
+def main(names):
+    hosts = [f"{n}.{DOMAIN}" for n in names]
+    # 1. Access first (so a host is never live without protection)
+    apps = cf("zero-trust", "access", "applications", "list")
+    app = next((a for a in apps if a["name"] == APP_NAME), None)
+    covered = {x["uri"] for a in apps for x in a.get("destinations", [])} | {a.get("domain") for a in apps}
+    dests = {x["uri"] for x in (app or {}).get("destinations", [])}
+    todo = [h for h in hosts if h not in covered]
+    if todo:
+        dests |= set(todo)
+        body = {"name": APP_NAME, "type": "self_hosted", "session_duration": "12h", "allowed_idps": [IDP],
+                "auto_redirect_to_identity": True, "app_launcher_visible": True,
+                "destinations": [{"type": "public", "uri": u} for u in sorted(dests)],
+                "policies": [{"id": ADMIN_POLICY, "precedence": 1}]}
+        if app: cf("zero-trust", "access", "applications", "update", app["id"], "--body", json.dumps(body))
+        else:   cf("zero-trust", "access", "applications", "create", "--body", json.dumps(body))
+        print("access: destinations ->", len(dests))
+    # 2. DNS
+    recs = {r["name"] for r in cf("dns", "records", "list", "-z", DOMAIN, "--per-page", "500")}
+    for h in hosts:
+        if h not in recs:
+            cf("dns", "records", "create", "-z", DOMAIN, "--body", json.dumps({"type": "CNAME", "name": h.split(".")[0],
+               "content": f"{TUNNEL}.cfargotunnel.com", "proxied": True, "comment": "M-237 portal"}))
+            print("dns:", h)
+
+    # 3. wait until Access is enforced at the edge (new/updated apps take minutes); only then open the route
+    ip = subprocess.run(["dig", "+short", "@1.1.1.1", f"portal.{DOMAIN}"], capture_output=True, text=True).stdout.split()[0]
+    for h in hosts:
+        for _ in range(48):
+            code = subprocess.run(["curl", "-s", "-m", "10", "--resolve", f"{h}:443:{ip}", "-o", "/dev/null", "-w", "%{http_code}", f"https://{h}/"],
+                                  capture_output=True, text=True).stdout
+            if code == "302": break
+            time.sleep(10)
+        else:
+            sys.exit(f"Access not enforced for {h} after 8 min; route NOT opened")
+        print("access enforced:", h)
+    # 4. tunnel ingress (last)
+    cur = cf("tunnels", "config", "get", TUNNEL)
+    os.makedirs(f"{ROOT}/cf-backups", exist_ok=True)
+    json.dump(cur, open(f"{ROOT}/cf-backups/tunnel-{int(time.time())}.json", "w"))
+    ing = cur["config"]["ingress"]
+    have = {i.get("hostname") for i in ing}
+    new = [h for h in hosts if h not in have]
+    if new:
+        assert ing[-1].get("service", "").startswith("http_status")
+        for h in new: ing.insert(len(ing) - 1, {"hostname": h, "service": ORIGIN, "originRequest": {}})
+        cf("tunnels", "config", "update", TUNNEL, "--body", json.dumps({"config": cur["config"]}))
+        print("ingress added:", new)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2: sys.exit(__doc__)
+    main(sys.argv[1:])

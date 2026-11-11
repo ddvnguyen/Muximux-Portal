@@ -1,0 +1,240 @@
+#!/usr/bin/python3
+"""lease-api — session-bound open-any-port proxy (M-249, Muximux-based).
+
+M-246 proved Muximux adds proxied apps at runtime (POST /api/apps) and
+forwards websockets, so the rewrite uses Muximux: a lease is a Muximux app
+"Lease :<port>" (proxy: true) served at /proxy/lease-<port>/. No dynamic
+Caddy routes are created; the only Caddy change is the static /lease* route
+to this service.
+
+Endpoints (bound to 127.0.0.1:3726; the outer gate is Cloudflare Access on
+portal.ddvnguyen.com, same as every other portal route):
+  GET  /lease/                     the lease UI (search box + active leases)
+  POST /lease/v1/lease {port}      open a lease (targets: 127.0.0.1 ONLY; the
+                                   host never comes from the request — no SSRF)
+  GET  /lease/v1/leases            active leases
+  DELETE /lease/v1/lease/<id>      close now (reason: closed by user)
+  GET  /lease/v1/ws?session=<sid>  the portal session WebSocket. Liveness is
+                                   the server's protocol-level ping (aiohttp
+                                   heartbeat); browsers answer it even in
+                                   background tabs, unlike JS timers.
+
+Lifecycle: WS drops -> grace (lease.yaml) -> app removed; hard cap 8h always.
+Memory-only state: on start every leftover "Lease :" app is purged from
+Muximux, so leases never survive a portal restart. Every event is appended
+to logs/lease-audit.jsonl (time, port, lease, session, close reason).
+"""
+import asyncio
+import json
+import os
+import secrets
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from aiohttp import WSMsgType, web
+
+HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(HERE, "lib"))
+import leaselib  # noqa: E402
+
+UI_DIR = os.path.join(HERE, "ui", "lease")
+APP_PREFIX = "Lease :"
+
+
+def mux_api(base, method, path, body=None, timeout=5):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else None
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        raise ConnectionError(f"muximux {method} {path}: {e}") from e
+
+
+def make_mux_add(base, group):
+    def mux_add(name, port):
+        mux_api(base, "POST", "/api/apps", {
+            "name": name,
+            "url": f"http://127.0.0.1:{port}",  # 127.0.0.1 only, never a request-supplied host
+            "group": group,
+            "enabled": True,
+            "open_mode": "iframe",
+            "proxy": True,
+            "proxy_skip_tls_verify": True,
+        })
+    return mux_add
+
+
+def make_mux_remove(base):
+    def mux_remove(name):
+        mux_api(base, "DELETE", "/api/app/" + urllib.parse.quote(name))
+    return mux_remove
+
+
+def startup_purge(base, audit):
+    """Leases are memory-only: drop any Lease apps Muximux still remembers."""
+    try:
+        apps = mux_api(base, "GET", "/api/apps") or []
+    except ConnectionError as e:
+        print(f"lease-api startup: cannot reach muximux, skipping purge: {e}", file=sys.stderr)
+        return 0
+    n = 0
+    for a in apps:
+        if str(a.get("name", "")).startswith(APP_PREFIX):
+            try:
+                mux_api(base, "DELETE", "/api/app/" + urllib.parse.quote(a["name"]))
+                n += 1
+            except ConnectionError as e:
+                print(f"lease-api startup: purge {a['name']!r} failed: {e}", file=sys.stderr)
+    if n:
+        audit("close", reason=f"lease-api restart purge ({n} stale app(s))")
+    return n
+
+
+class LeaseService:
+    def __init__(self, registry, cfg):
+        self.registry = registry
+        self.cfg = cfg
+        self._sockets = set()
+
+    async def broadcast(self):
+        msg = json.dumps({"type": "leases", "leases": self.registry.active()})
+        for ws in list(self._sockets):
+            try:
+                await ws.send_str(msg)
+            except ConnectionError:
+                pass
+
+    # -- HTTP handlers ------------------------------------------------------
+
+    async def index(self, request):
+        return web.FileResponse(os.path.join(UI_DIR, "index.html"),
+                                headers={"Cache-Control": "no-store"})
+
+    async def app_js(self, request):
+        return web.FileResponse(os.path.join(UI_DIR, "app.js"),
+                                headers={"Cache-Control": "no-store"})
+
+    async def root_redirect(self, request):
+        raise web.HTTPFound("/lease/")
+
+    async def open_lease(self, request):
+        try:
+            body = json.loads(await request.text() or "{}")
+        except json.JSONDecodeError:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        session = body.get("session") or request.query.get("session") or ""
+        try:
+            lease, created = self.registry.create(body.get("port"), session or "anonymous")
+        except leaselib.PortDenied as e:
+            return web.json_response({"error": "port denied", "reason": str(e)}, status=403)
+        except leaselib.LeaseError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except ConnectionError as e:
+            return web.json_response({"error": "muximux unreachable", "detail": str(e)}, status=502)
+        await self.broadcast()
+        return web.json_response({"lease": lease, "created": created})
+
+    async def list_leases(self, request):
+        return web.json_response({"leases": self.registry.active()})
+
+    async def close_lease(self, request):
+        lid = request.match_info["id"]
+        if not self.registry.get(lid):
+            return web.json_response({"error": "unknown lease"}, status=404)
+        self.registry.close(lid, "closed by user")
+        await self.broadcast()
+        return web.json_response({"closed": True})
+
+    # -- WebSocket session --------------------------------------------------
+
+    async def session_ws(self, request):
+        sid = request.query.get("session") or secrets.token_hex(8)
+        # heartbeat = SERVER-side protocol ping; the browser network stack
+        # answers even when the tab is backgrounded, so no JS timers needed.
+        ws = web.WebSocketResponse(heartbeat=self.cfg["heartbeat_seconds"])
+        await ws.prepare(request)
+        self._sockets.add(ws)
+        try:
+            await ws.send_str(json.dumps({"type": "hello", "session": sid,
+                                          "leases": self.registry.active()}))
+            async for msg in ws:
+                if msg.type != WSMsgType.TEXT:
+                    continue
+                try:
+                    data = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    continue
+                adopted = []
+                for lid in data.get("adopt") or []:
+                    if self.registry.adopt(str(lid), sid):
+                        adopted.append(lid)
+                if adopted:
+                    await self.broadcast()
+        finally:
+            self._sockets.discard(ws)
+            self.registry.session_closed(sid)
+            await self.broadcast()
+        return ws
+
+    # -- background sweep -----------------------------------------------------
+
+    async def sweep_loop(self):
+        interval = self.cfg["sweep_interval_seconds"]
+        while True:
+            await asyncio.sleep(interval)
+            closed = self.registry.sweep()
+            if closed:
+                print(f"lease-api sweep: closed {closed}", flush=True)
+                await self.broadcast()
+
+
+def main():
+    cfg = leaselib.load_config(os.path.join(HERE, "lease.yaml"))
+    deny = leaselib.load_deny(os.path.join(HERE, "ports-deny.yaml"))
+    audit = leaselib.AuditLog(os.path.join(HERE, cfg["audit_log"]))
+    base = cfg["muximux_base"]
+
+    n = startup_purge(base, audit)
+    print(f"lease-api: startup purge removed {n} stale Lease app(s)", flush=True)
+
+    registry = leaselib.LeaseRegistry(cfg, deny, mux_add=make_mux_add(base, cfg["lease_group"]),
+                                      mux_remove=make_mux_remove(base), audit=audit)
+    svc = LeaseService(registry, cfg)
+
+    app = web.Application(client_max_size=16 * 1024)
+    app.add_routes([
+        web.get("/", svc.root_redirect),
+        web.get("/lease", svc.root_redirect),
+        web.get("/lease/", svc.index),
+        web.get("/lease/app.js", svc.app_js),
+        web.post("/lease/v1/lease", svc.open_lease),
+        web.get("/lease/v1/leases", svc.list_leases),
+        web.delete("/lease/v1/lease/{id}", svc.close_lease),
+        web.get("/lease/v1/ws", svc.session_ws),
+    ])
+    async def _start_sweep(_app):
+        # MUST NOT return the Task: on_startup awaits each handler's return
+        # value, so returning the sweep Task would deadlock the startup
+        # (and the site would never bind). Fire and forget instead.
+        _app["sweep_task"] = asyncio.create_task(svc.sweep_loop())
+
+    async def _stop_sweep(_app):
+        task = _app.get("sweep_task")
+        if task is not None:
+            task.cancel()
+
+    app.on_startup.append(_start_sweep)
+    app.on_cleanup.append(_stop_sweep)
+    host, port = cfg["listen"].rsplit(":", 1)
+    print(f"lease-api: listening on {host}:{port} (grace {cfg['grace_seconds']}s, "
+          f"cap {cfg['max_lifetime_seconds']}s, deny {len(deny)} ports)", flush=True)
+    web.run_app(app, host=host, port=int(port), print=None)
+
+
+if __name__ == "__main__":
+    main()

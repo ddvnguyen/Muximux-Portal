@@ -1,0 +1,58 @@
+- Live ports:
+    - Multica dev UI (vite):
+        href: https://portal.ddvnguyen.com/p/4173/
+        description: "127.0.0.1:4173 (dynamic)"
+        siteMonitor: http://127.0.0.1:4173/
+    - opencode instance:
+        href: https://portal.ddvnguyen.com/p/49374/
+        description: "127.0.0.1:49374 (dynamic)"
+        siteMonitor: http://127.0.0.1:49374/
+- DSH:
+    - DSH-X:
+        href: https://dsh-x.ddvnguyen.com/
+        description: "127.0.0.1:3181 - DSH fleet lane x"
+        siteMonitor: http://127.0.0.1:3181/
+    - DSH-Z:
+        href: https://dsh-z.ddvnguyen.com/
+        description: "127.0.0.1:3180 - DSH fleet lane z (test lane)"
+        siteMonitor: http://127.0.0.1:3180/
+    - Bili plugin:
+        href: https://bili.ddvnguyen.com/__bili/?embed=1
+        description: "127.0.0.1:18791 - dsh-z __bili plugin (embed)"
+        siteMonitor: http://127.0.0.1:18791/
+- MOCT:
+    - Multica:
+        href: https://multica.ddvnguyen.com/
+        description: "127.0.0.1:3701 - Multica web UI"
+        siteMonitor: http://127.0.0.1:3701/
+    - MOCT-X API:
+        href: https://moct-x.ddvnguyen.com/
+        description: "127.0.0.1:8210 - moct team backend x (API, no UI)"
+        siteMonitor: http://127.0.0.1:8210/
+    - MOCT-Z API:
+        href: https://moct-z.ddvnguyen.com/
+        description: "127.0.0.1:8310 - moct team backend z (API, no UI)"
+        siteMonitor: http://127.0.0.1:8310/
+- Agents:
+    - opencode:
+        href: https://opencode.ddvnguyen.com/
+        description: "127.0.0.1:4096 - opencode server"
+        siteMonitor: http://127.0.0.1:4096/
+    - Freebuff Desktop:
+        href: https://freebuff.ddvnguyen.com/
+        description: "127.0.0.1:4320 - Freebuff control UI"
+        siteMonitor: http://127.0.0.1:4320/
+- Hydra:
+    - Grafana:
+        href: https://grafana.ddvnguyen.com/
+        description: "127.0.0.1:3000 - Hydra dashboards"
+        siteMonitor: http://127.0.0.1:3000/
+    - Prometheus:
+        href: https://prom.ddvnguyen.com/
+        description: "127.0.0.1:9090 - Metrics"
+        siteMonitor: http://127.0.0.1:9090/
+- Virtual:
+    - Virtual browser:
+        href: https://browser.ddvnguyen.com/
+        description: "127.0.0.1:3730 - Chromium streamed over websocket (Selkies); password + Access"
+        siteMonitor: http://127.0.0.1:3730/

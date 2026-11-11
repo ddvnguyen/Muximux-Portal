@@ -1,0 +1,58 @@
+- Live ports:
+    - Multica dev UI (vite):
+        href: http://127.0.0.1:4173/
+        description: "127.0.0.1:4173 (dynamic)"
+        siteMonitor: http://127.0.0.1:4173/
+    - opencode instance:
+        href: http://127.0.0.1:49374/
+        description: "127.0.0.1:49374 (dynamic)"
+        siteMonitor: http://127.0.0.1:49374/
+- DSH:
+    - DSH-X:
+        href: http://127.0.0.1:3181/
+        description: "127.0.0.1:3181 - DSH fleet lane x"
+        siteMonitor: http://127.0.0.1:3181/
+    - DSH-Z:
+        href: http://127.0.0.1:3180/
+        description: "127.0.0.1:3180 - DSH fleet lane z (test lane)"
+        siteMonitor: http://127.0.0.1:3180/
+    - Bili plugin:
+        href: http://127.0.0.1:18791/__bili/?embed=1
+        description: "127.0.0.1:18791 - dsh-z __bili plugin (embed)"
+        siteMonitor: http://127.0.0.1:18791/
+- MOCT:
+    - Multica:
+        href: http://127.0.0.1:3701/
+        description: "127.0.0.1:3701 - Multica web UI"
+        siteMonitor: http://127.0.0.1:3701/
+    - MOCT-X API:
+        href: http://127.0.0.1:8210/
+        description: "127.0.0.1:8210 - moct team backend x (API, no UI)"
+        siteMonitor: http://127.0.0.1:8210/
+    - MOCT-Z API:
+        href: http://127.0.0.1:8310/
+        description: "127.0.0.1:8310 - moct team backend z (API, no UI)"
+        siteMonitor: http://127.0.0.1:8310/
+- Agents:
+    - opencode:
+        href: http://127.0.0.1:4096/
+        description: "127.0.0.1:4096 - opencode server"
+        siteMonitor: http://127.0.0.1:4096/
+    - Freebuff Desktop:
+        href: http://127.0.0.1:4320/
+        description: "127.0.0.1:4320 - Freebuff control UI"
+        siteMonitor: http://127.0.0.1:4320/
+- Hydra:
+    - Grafana:
+        href: http://127.0.0.1:3000/
+        description: "127.0.0.1:3000 - Hydra dashboards"
+        siteMonitor: http://127.0.0.1:3000/
+    - Prometheus:
+        href: http://127.0.0.1:9090/
+        description: "127.0.0.1:9090 - Metrics"
+        siteMonitor: http://127.0.0.1:9090/
+- Virtual:
+    - Virtual browser:
+        href: http://127.0.0.1:3730/
+        description: "127.0.0.1:3730 - Chromium streamed over websocket (Selkies); password + Access"
+        siteMonitor: http://127.0.0.1:3730/

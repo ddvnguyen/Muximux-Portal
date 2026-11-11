@@ -11,6 +11,8 @@ Reconciles through the Muximux REST API (POST/PUT/DELETE /api/app[s]); idempoten
 import argparse, json, os, subprocess, sys, urllib.request, urllib.error
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TS_HOST = "ddv-server-00.zubron-denebola.ts.net"
+LEASE_PREFIX = "Lease :"   # apps owned by bin/lease-api (M-249), never hand-edited
+LEASE_API = "http://127.0.0.1:3726"
 GROUP = {"dsh": "DSH", "moct": "MOCT", "multica": "Multica", "mmx": "MMX", "agents": "Agents",
          "freebuff": "Freebuff", "hydra": "Hydra", "system": "System"}
 
@@ -58,7 +60,21 @@ def desired(mode):
     if os.path.exists(extra):
         for e in json.load(open(extra)):
             add(e["name"], GROUP.get(e.get("group", "system"), e.get("group")), e["port"], e.get("scheme", "http"))
+    # M-249: the lease UI page (search box for any port), served by lease-api.
+    if "Ports" not in seen:
+        apps.append({"name": "Ports", "url": "/lease/", "group": "System", "enabled": True,
+                     "open_mode": "iframe", "proxy": False, "proxy_skip_tls_verify": True})
+        seen.add("Ports")
     return apps
+
+def lease_names():
+    """Active lease app names from lease-api, or None if it is unreachable
+    (then lease apps are left strictly alone — lease-api owns their lifecycle)."""
+    try:
+        data = api(LEASE_API, "GET", "/lease/v1/leases") or {}
+        return {x["name"] for x in data.get("leases", [])}
+    except SystemExit:
+        return None
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--base", default="http://127.0.0.1:45001")
@@ -66,13 +82,20 @@ def main():
     a = ap.parse_args()
     want = {x["name"]: x for x in desired(a.mode)}
     have = {x["name"]: x for x in (api(a.base, "GET", "/api/apps") or [])}
+    active_leases = lease_names()
     ops = []
     for n, w in want.items():
         h = have.get(n)
         if h is None: ops.append(("POST", "/api/apps", w, n))
         elif any(h.get(k) != v for k, v in w.items()): ops.append(("PUT", "/api/app/" + urllib.parse.quote(n), {**h, **w}, n))
     for n in have:
-        if n not in want: ops.append(("DELETE", "/api/app/" + urllib.parse.quote(n), None, n))
+        if n.startswith(LEASE_PREFIX):
+            # M-249: keep exactly the leases lease-api reports active (its
+            # tabs would otherwise be wiped by this sync every 30s).
+            if active_leases is not None and n not in active_leases:
+                ops.append(("DELETE", "/api/app/" + urllib.parse.quote(n), None, n))
+        elif n not in want:
+            ops.append(("DELETE", "/api/app/" + urllib.parse.quote(n), None, n))
     order = {"DELETE": 0, "PUT": 1, "POST": 2}
     ops.sort(key=lambda o: order[o[0]])  # deletes first: Muximux rejects two apps with the same proxy slug
     for m, path, body, n in ops:

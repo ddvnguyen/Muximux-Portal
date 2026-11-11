@@ -1,0 +1,365 @@
+config_version: 0
+server:
+    listen: 127.0.0.1:45001
+    base_path: ""
+    title: Muximux spike (M-246)
+    language: en
+    log_level: info
+    log_format: text
+    proxy_timeout: 30s
+    tls:
+        domain: ""
+        email: ""
+        cert: ""
+        key: ""
+auth:
+    method: none
+    users: []
+    trusted_proxies: []
+    headers: {}
+    logout_url: ""
+    oidc:
+        enabled: false
+        issuer_url: ""
+        client_id: ""
+        client_secret: ""
+        redirect_url: ""
+        scopes: []
+        username_claim: ""
+        email_claim: ""
+        groups_claim: ""
+        display_name_claim: ""
+        admin_groups: []
+    session_max_age: ""
+    secure_cookies: false
+    setup_complete: false
+navigation:
+    position: top
+    width: 220px
+    auto_hide: false
+    auto_hide_delay: 0.5s
+    show_on_hover: true
+    show_labels: true
+    show_logo: true
+    show_home_button: true
+    show_app_colors: true
+    show_icon_background: false
+    icon_scale: 1
+    show_splash_on_startup: false
+    show_shadow: true
+    dynamic_tab_branding: false
+    floating_position: bottom-right
+    bar_style: grouped
+    hide_sidebar_footer: false
+    show_docker_badge: true
+    max_open_tabs: 0
+theme:
+    family: default
+    variant: system
+icons:
+    dashboard_icons:
+        enabled: true
+        mode: on_demand
+        cache_dir: icons/dashboard
+        cache_ttl: 7d
+health:
+    enabled: true
+    interval: 30s
+    timeout: 5s
+keybindings: {}
+discovery:
+    docker:
+        enabled: false
+        endpoint: ""
+        tls:
+            enabled: false
+        network_strategy: ""
+        refresh_interval: ""
+        auto_import: "off"
+        health_badge_placement: overview
+groups:
+    - name: Agents
+      icon:
+        type: ""
+      color: ""
+      order: 1
+      expanded: false
+    - name: MOCT
+      icon:
+        type: ""
+      color: ""
+      order: 2
+      expanded: false
+    - name: System
+      icon:
+        type: ""
+      color: ""
+      order: 3
+      expanded: false
+apps:
+    - name: opencode
+      url: https://opencode.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: Agents
+      order: 0
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: opencode instance :33651
+      url: http://127.0.0.1:33651
+      icon:
+        type: ""
+      color: ""
+      group: Agents
+      order: 1
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: opencode instance :49374
+      url: http://127.0.0.1:49374
+      icon:
+        type: ""
+      color: ""
+      group: Agents
+      order: 2
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: DSH-X
+      url: https://dsh-x.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: DSH
+      order: 3
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Bili plugin
+      url: http://127.0.0.1:18791
+      icon:
+        type: ""
+      color: ""
+      group: DSH
+      order: 4
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: DSH-Z
+      url: https://dsh-z.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: DSH
+      order: 5
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Freebuff engine :41547
+      url: http://127.0.0.1:41547
+      icon:
+        type: ""
+      color: ""
+      group: Freebuff
+      order: 6
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Freebuff engine :41463
+      url: http://127.0.0.1:41463
+      icon:
+        type: ""
+      color: ""
+      group: Freebuff
+      order: 7
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Freebuff engine :34993
+      url: http://127.0.0.1:34993
+      icon:
+        type: ""
+      color: ""
+      group: Freebuff
+      order: 8
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Freebuff Desktop
+      url: https://freebuff.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: Freebuff
+      order: 9
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Grafana
+      url: https://grafana.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: Hydra
+      order: 10
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Prometheus
+      url: http://127.0.0.1:9091
+      icon:
+        type: ""
+      color: ""
+      group: Hydra
+      order: 11
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: MOCT-X API
+      url: http://127.0.0.1:8210
+      icon:
+        type: ""
+      color: ""
+      group: MOCT
+      order: 12
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: MOCT-Z API
+      url: http://127.0.0.1:8310
+      icon:
+        type: ""
+      color: ""
+      group: MOCT
+      order: 13
+      enabled: true
+      default: false
+      open_mode: iframe
+      proxy: true
+      proxy_skip_tls_verify: true
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Multica
+      url: https://multica.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: Multica
+      order: 14
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []
+    - name: Cockpit
+      url: https://server.ddvnguyen.com
+      icon:
+        type: ""
+      color: ""
+      group: System
+      order: 15
+      enabled: true
+      default: false
+      open_mode: new_tab
+      proxy: false
+      scale: 0
+      auth_bypass: []
+      access:
+        roles: []
+        users: []

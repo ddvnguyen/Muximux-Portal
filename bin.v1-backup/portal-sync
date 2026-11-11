@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Regenerate Caddy drop-ins + Homepage services.yaml from services.tsv, validate, reload.
+set -euo pipefail
+ROOT=/mnt/workspace/portal
+DOMAIN="${PORTAL_DOMAIN:-ddvnguyen.com}"
+exec python3 -I - "$ROOT" "$DOMAIN" <<'PY'
+import sys, os, glob, subprocess, collections
+root, domain = sys.argv[1], sys.argv[2]
+rows = []
+for line in open(f"{root}/services.tsv"):
+    if line.startswith("#") or not line.strip(): continue
+    f = line.rstrip("\n").split("\t")
+    f += [""] * (8 - len(f))
+    rows.append(dict(zip(["name","port","group","title","desc","path","existing","rewrite"], f)))
+for r in rows:
+    assert r["name"].replace("-","").isalnum() and r["port"].isdigit(), r
+for p in glob.glob(f"{root}/conf.d/*.caddy"): os.remove(p)
+for r in rows:
+    rw = ("\t\theader_up Host {upstream_hostport}\n\t\theader_up Origin http://{upstream_hostport}\n" if r["rewrite"]=="y" else "")
+    open(f"{root}/conf.d/{r['name']}.caddy","w").write(
+f"""http://{r['name']}.{domain}:3720 {{
+	log
+	reverse_proxy 127.0.0.1:{r['port']} {{
+		flush_interval -1
+		lb_try_duration 10s
+		lb_try_interval 500ms
+{rw}	}}
+}}
+""")
+dyn = []
+if os.path.exists(f"{root}/dynamic.tsv"):
+    for line in open(f"{root}/dynamic.tsv"):
+        f = line.rstrip("\n").split("\t")
+        if len(f) >= 3 and f[0].isdigit(): dyn.append(dict(port=f[0], label=f[1], group=f[2], cmd=f[3] if len(f) > 3 else ""))
+os.makedirs(f"{root}/dynamic", exist_ok=True)
+open(f"{root}/dynamic/routes.inc","w").write("".join(
+f"""handle_path /p/{d['port']}/* {{
+	reverse_proxy 127.0.0.1:{d['port']} {{
+		flush_interval -1
+		header_up Host {{upstream_hostport}}
+	}}
+}}
+""" for d in dyn))
+groups = collections.OrderedDict()
+for r in rows: groups.setdefault(r["group"], []).append(r)
+def render(local):
+    out = []
+    if dyn:
+        out.append("- Live ports:")
+        for d in dyn:
+            href = f"http://127.0.0.1:{d['port']}/" if local else f"https://portal.{domain}/p/{d['port']}/"
+            out += [f"    - {d['label']}:", f"        href: {href}",
+                    f"        description: \"127.0.0.1:{d['port']} (dynamic)\"",
+                    f"        siteMonitor: http://127.0.0.1:{d['port']}/"]
+    for g, items in groups.items():
+        out.append(f"- {g}:")
+        for r in items:
+            href = f"http://127.0.0.1:{r['port']}{r['path']}" if local else f"https://{r['name']}.{domain}{r['path']}"
+            out += [f"    - {r['title']}:", f"        href: {href}",
+                    f"        description: \"127.0.0.1:{r['port']} - {r['desc']}\"",
+                    f"        siteMonitor: http://127.0.0.1:{r['port']}/"]
+    return "\n".join(out) + "\n"
+open(f"{root}/homepage/config/services.yaml","w").write(render(False))
+os.makedirs(f"{root}/homepage-local/config", exist_ok=True)
+open(f"{root}/homepage-local/config/services.yaml","w").write(render(True))
+caddy = "/home/ddv/.local/bin/caddy"
+subprocess.run([caddy,"validate","--config",f"{root}/Caddyfile","--adapter","caddyfile"],check=True,stderr=subprocess.DEVNULL)
+r = subprocess.run(["systemctl","--user","is-active","portal-caddy"],capture_output=True,text=True)
+if r.stdout.strip()=="active":
+    subprocess.run([caddy,"reload","--config",f"{root}/Caddyfile","--adapter","caddyfile","--address","localhost:2022"],check=True)
+print(f"synced {len(rows)} services")
+PY

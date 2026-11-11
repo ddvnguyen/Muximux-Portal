@@ -1,0 +1,8 @@
+title: Local view (virtual browser)
+headerStyle: clean
+statusStyle: dot
+layout:
+  DSH: {style: row, columns: 3}
+  MOCT: {style: row, columns: 3}
+  Agents: {style: row, columns: 2}
+  Hydra: {style: row, columns: 2}
