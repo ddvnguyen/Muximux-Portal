@@ -168,15 +168,13 @@ async function doOpen(port, overrides, showForm) {
     refuse("ports service unreachable.");
     return;
   }
-  // frame source: tailnet/public render through the shim (strips
-  // X-Frame-Options/CSP); the raw path proxy loads directly.
+  // frame source: public hosts render through the prefix shim (whole origin
+  // proxies, X-Frame-Options/CSP stripped); the path proxy loads directly.
   let src = body.url;
-  const directHosts = [];
-  try {
-    if (body.gateway === "proxy") src = body.url;
-    else if (body.url.startsWith("/")) src = body.url;
-    else src = `/ports/v1/shim?port=${port}&path=${encodeURIComponent(profilePath(body))}`;
-  } catch { src = body.url; }
+  if (body.gateway === "proxy") src = body.url;
+  else if (!body.url.startsWith("/")) {
+    src = `/ports/v1/shim/${port}${profilePrefixPath(body)}`;
+  }
   $("vvia").textContent = `via ${body.gateway}${body.gateway === "proxy" ? " (path proxy)" : ""}`;
   if (body.warning) {
     $("vwarn").textContent = body.warning;
@@ -196,10 +194,11 @@ async function doOpen(port, overrides, showForm) {
   }
 }
 
-function profilePath(body) {
+function profilePrefixPath(body) {
   try {
     const u = new URL(body.url, location.origin);
-    return u.pathname + u.search || "/";
+    const p = (u.pathname || "/") + (u.search || "");
+    return p.startsWith("/") ? p : "/" + p;
   } catch { return "/"; }
 }
 

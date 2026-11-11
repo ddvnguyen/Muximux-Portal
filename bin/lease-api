@@ -29,10 +29,10 @@ in port-profiles.yaml.
 import asyncio
 import json
 import os
+import re
 import secrets
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 
 from aiohttp import WSMsgType, web
@@ -259,20 +259,21 @@ class LeaseService:
         return web.json_response({**decision, "port": port})
 
     async def ports_shim(self, request):
-        """Framing shim: fetch 127.0.0.1:<port><path>, strip frame-blocking
-        headers, return the body. The iframe pane loads this URL so
-        X-Frame-Options/CSP hosts (Cockpit, Multica) render in-portal."""
+        """Framing shim: proxy the whole origin of 127.0.0.1:<port> under
+        `/ports/v1/shim/<port>/`, strip frame-blocking headers, rewrite
+        root-absolute asset URLs + inject <base> so loads stay in the shim.
+        Runtime websockets still bypass it — disclosed limit, tailnet fixes."""
         try:
-            port = int(request.query.get("port"))
+            port = int(request.match_info["port"])
             portpage.check_port_int(port)
         except (TypeError, ValueError):
             return web.Response(status=400, text="port must be 1..65535")
         if port in self.registry.deny:
             return web.Response(status=403, text="port denied")
-        path = request.query.get("path") or "/"
-        if not path.startswith("/"):
-            path = "/" + path
-        if ".." in path or len(path) > 500:
+        rest = (request.match_info.get("rest") or "/").split("?", 1)[0]
+        if not rest.startswith("/"):
+            rest = "/" + rest
+        if ".." in rest or len(rest) > 500:
             return web.Response(status=400, text="bad path")
         profiles = portpage.load_profiles(PROFILES_PATH)
         profile = profiles.get(port, portpage.default_profile(port))
@@ -281,7 +282,9 @@ class LeaseService:
             scheme = "http"
         import ssl as _ssl
         import urllib.request as _urlopen_mod
-        target = f"{scheme}://127.0.0.1:{port}{path}"
+        target = f"{scheme}://127.0.0.1:{port}{rest}"
+        if request.query_string:
+            target += "?" + request.query_string
         try:
             req = _urlopen_mod.Request(target, method="GET",
                                        headers={"User-Agent": "portal-shim/312"})
@@ -296,6 +299,22 @@ class LeaseService:
         except Exception as e:
             return web.Response(status=502,
                                 text=f"local :{port} unreachable: {e}"[:300])
+        prefix = f"/ports/v1/shim/{port}"
+        if "text/html" in ctype:
+            try:
+                html = raw.decode("utf-8", "replace")
+            except Exception:
+                html = ""
+            if html:
+                # keep root-absolute loads inside the shim (skip //hosts)
+                html = re.sub(r"""((?:src|href|action)=["'])/(?!/)""",
+                              r"\1" + prefix + "/", html)
+                base = f'<base href="{prefix}/">'
+                if "<head" in html:
+                    html = re.sub(r"(<head[^>]*>)", r"\1" + base, html, count=1)
+                else:
+                    html = base + html
+                raw = html.encode("utf-8")
         headers = {"Cache-Control": "no-store", "Content-Type": ctype,
                    "X-Frame-Options": "ALLOWALL"}
         return web.Response(body=raw, headers=headers)
@@ -477,7 +496,8 @@ def main():
         web.get("/ports/{name}", svc.ports_asset),
         web.get("/ports/v1/resolve", svc.ports_resolve),
         web.get("/ports/v1/registry", svc.ports_registry),
-        web.get("/ports/v1/shim", svc.ports_shim),
+        web.get("/ports/v1/shim/{port}/{rest:.*}", svc.ports_shim),
+        web.get("/ports/v1/shim/{port}", svc.ports_shim),
         web.post("/ports/v1/open", svc.ports_open),
         web.get("/ports/v1/profile/{port}", svc.ports_profile_get),
         web.put("/ports/v1/profile/{port}", svc.ports_profile_put),
