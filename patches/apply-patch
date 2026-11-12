@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Idempotent apply of freebuff-registry.patch to the Freebuff web runtime.
+# Usage: apply-patch [RELEASE_DIR]
+# Defaults to /mnt/workspace/clouds/freebuff/current
+set -euo pipefail
+
+ROOT="${1:-/mnt/workspace/clouds/freebuff/current}"
+TARGET="$ROOT/freebuff/server/src/orchestrator.ts"
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH="$PATCH_DIR/freebuff-registry.patch"
+
+if [[ ! -f "$TARGET" ]]; then
+  echo "apply-patch: target not found: $TARGET" >&2
+  exit 1
+fi
+if [[ ! -f "$PATCH" ]]; then
+  echo "apply-patch: patch not found: $PATCH" >&2
+  exit 1
+fi
+
+# Idempotency: already applied if the registration helper is present.
+if grep -q 'function profileKey(profilePath' "$TARGET"; then
+  echo "apply-patch: already applied to $TARGET"
+  exit 0
+fi
+
+# Try to apply; if it fails, report and leave the file untouched.
+if (cd "$ROOT" && patch -p1 --forward --no-backup-if-mismatch < "$PATCH") >/mnt/workspace/tmp/apply-patch.out 2>&1; then
+  cat /mnt/workspace/tmp/apply-patch.out 2>/dev/null || true
+  echo "apply-patch: applied to $TARGET"
+else
+  cat /mnt/workspace/tmp/apply-patch.out 2>/dev/null || true
+  echo "apply-patch: FAILED" >&2
+  exit 1
+fi

@@ -1,0 +1,122 @@
+--- a/freebuff/server/src/orchestrator.ts
++++ b/freebuff/server/src/orchestrator.ts
+@@ -219,6 +219,53 @@
+   return env
+ }
+ 
++function profileKey(profilePath: string): string {
++  const match = profilePath.match(/accounts\/([^/]+)/)
++  return match?.[1] ?? ''
++}
++
++type RegistryConfig = { url: string; token: string }
++
++function registryConfig(): RegistryConfig | null {
++  const url = process.env.PORTS_API_URL?.trim()
++  const tokenFile = process.env.PORTS_API_TOKEN_FILE?.trim()
++  if (!url || !tokenFile) return null
++  try {
++    const token = readFileSync(tokenFile, 'utf8').trim()
++    if (!token) return null
++    return { url: url.replace(/\/+$/, ''), token }
++  } catch {
++    return null
++  }
++}
++
++async function registryRequest(
++  cfg: RegistryConfig,
++  method: string,
++  path: string,
++  body?: unknown,
++  timeoutMs = 2000,
++): Promise<void> {
++  const controller = new AbortController()
++  const timer = setTimeout(() => controller.abort(), timeoutMs)
++  timer.unref?.()
++  try {
++    await fetch(`${cfg.url}${path}`, {
++      method,
++      headers: {
++        'X-Ports-Token': cfg.token,
++        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
++      },
++      body: body !== undefined ? JSON.stringify(body) : undefined,
++      signal: controller.signal,
++    })
++  } catch {
++    // Registry down must never affect Freebuff start.
++  } finally {
++    clearTimeout(timer)
++  }
++}
++
+ export async function startOrchestrator(
+   options: StartOrchestratorOptions,
+ ): Promise<OrchestratorHandle> {
+@@ -243,6 +290,8 @@
+   let readyAnnouncement: ReadyAnnouncement | null = null
+   let settled = false
+   let stopping = false
++  let heartbeat: NodeJS.Timeout | null = null
++  let registeredId: string | null = null
+   const tail: string[] = []
+ 
+   const appendTail = (line: string) => {
+@@ -337,6 +386,12 @@
+         )
+         return
+       }
++  if (heartbeat) { clearInterval(heartbeat); heartbeat = null }
++  if (registeredId) {
++    const cfg = registryConfig()
++    if (cfg) void registryRequest(cfg, 'DELETE', `/v1/ports/${encodeURIComponent(registeredId)}`)
++    registeredId = null
++  }
+       if (!stopping) {
+         log.end()
+         options.onUnexpectedExit?.(code ?? null, signal ?? null)
+@@ -349,6 +404,30 @@
+     if (!child.pid)
+       throw new Error('Orchestrator started without a process id.')
+ 
++    const cfg = registryConfig()
++    if (cfg) {
++      const key = profileKey(profilePath) || String(announcement.port)
++      registeredId = `freebuff.engine[${key}]`
++      const id = registeredId
++      void registryRequest(cfg, 'POST', '/v1/ports', {
++        id,
++        app: 'freebuff',
++        lane: 'none',
++        role: 'engine',
++        port: announcement.port,
++        pid: child.pid,
++        ttl: 60,
++      })
++      heartbeat = setInterval(() => {
++        if (child.exitCode !== null || child.signalCode !== null) {
++          if (heartbeat) { clearInterval(heartbeat); heartbeat = null }
++          return
++        }
++        void registryRequest(cfg, 'PUT', `/v1/ports/${encodeURIComponent(id)}`)
++      }, 30_000)
++      heartbeat.unref?.()
++    }
++
+     return {
+       port: announcement.port,
+       pid: child.pid,
+@@ -357,6 +436,12 @@
+       stop: async () => {
+         if (stopping) return
+         stopping = true
++        if (heartbeat) { clearInterval(heartbeat); heartbeat = null }
++        if (registeredId) {
++          const cfg = registryConfig()
++          if (cfg) await registryRequest(cfg, 'DELETE', `/v1/ports/${encodeURIComponent(registeredId)}`)
++          registeredId = null
++        }
+         if (child.exitCode !== null || child.signalCode !== null) {
+           log.end()
+           return
