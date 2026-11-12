@@ -5,12 +5,15 @@
 "use strict";
 
 const PORT_RE = /^(?:port:|:)?(\d{1,5})$/i;
-
 let registry = null;
-let sid = sessionStorage.getItem("portal.ext.session");
+
+let sid = null;
+try { sid = sessionStorage.getItem("portal.ext.session"); } catch { sid = null; }
 if (!sid) {
-  sid = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).replace(/-/g, "").slice(0, 16);
-  sessionStorage.setItem("portal.ext.session", sid);
+  try {
+    sid = (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/-/g, "").slice(0, 16);
+  } catch { sid = (Date.now().toString(36) + Math.random().toString(36).slice(2, 14)).slice(0, 16); }
+  try { sessionStorage.setItem("portal.ext.session", sid); } catch { /* private mode */ }
 }
 
 function parsePort(text) {
@@ -63,6 +66,41 @@ function resultItem(port, title, sub, denied) {
 }
 function clearOurs(root) {
   (root || document).querySelectorAll("[data-portal-ext]").forEach((e) => e.remove());
+  // unhide the empty-state Muximux owns (we hide it while our rows show)
+  (root || document).querySelectorAll("[data-portal-ext-hidden]").forEach((e) => {
+    e.hidden = false;
+    e.removeAttribute("data-portal-ext-hidden");
+  });
+}
+
+function hideEmptyState(modal) {
+  for (const d of modal.querySelectorAll("div")) {
+    if ((d.textContent || "").includes("No results found") && !d.hidden) {
+      d.hidden = true;
+      d.setAttribute("data-portal-ext-hidden", "1");
+    }
+  }
+}
+
+function manageRow() {
+  const li = document.createElement("li");
+  li.setAttribute("data-portal-ext", "1");
+  const btn = document.createElement("button");
+  btn.className = "command-palette-item w-full px-4 min-h-[52px] flex items-center space-x-3 text-start py-3";
+  btn.setAttribute("type", "button");
+  btn.dataset.selected = "false";
+  btn.innerHTML =
+    '<div style="flex:none;width:32px;height:32px;border-radius:8px;background:#1f2937;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;">#</div>' +
+    '<div style="flex:1;min-width:0;text-align:left;"><div style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
+    '<div style="font-size:13px;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div></div>';
+  btn.children[1].children[0].textContent = "Manage local ports";
+  btn.children[1].children[1].textContent = "table, live status, saved profiles";
+  btn.addEventListener("click", () => {
+    document.querySelector('[role="dialog"]')?.remove();
+    location.hash = "#/ports";
+  });
+  li.append(btn);
+  return li;
 }
 
 let refreshing = false;
@@ -90,20 +128,22 @@ async function refresh(force) {
         if (body.action === "refuse" || res.status === 403) reason = body.reason || "denied";
       } catch { reason = "ports service unreachable"; }
       if (reason) rows.push(resultItem(port, `Port ${port} — denied`, reason, true));
-      else rows.push(resultItem(port, `Open local port ${port}`, "new portal tab", false));
+      else rows.push(resultItem(port, `Open local port ${port}`, "opens as an app in the portal", false));
     }
     if (ql && ql !== "port:" && port == null) {
       for (const e of reg.entries || []) {
         const hay = `${e.title} ${e.id} :${e.port}`.toLowerCase();
         if (hay.includes(ql) && rows.length < 6) {
-          rows.push(resultItem(e.port, `Open ${e.title} :${e.port}`, e.group || "", false));
+          rows.push(resultItem(e.port, `Open ${e.title} :${e.port}`, "opens as an app in the portal", false));
         }
       }
     }
     if (!rows.length) return;
+    hideEmptyState(p.modal);
+    rows.push(manageRow());
     let list = p.list;
     if (!list || !p.modal.contains(list)) {
-      // empty state ("No results found"): own list inside the modal
+      // empty state hidden above; own list inside the modal
       list = document.createElement("ul");
       list.className = "pb-2";
       const empty = [...p.modal.querySelectorAll("div")].find((d) =>
@@ -111,7 +151,7 @@ async function refresh(force) {
       if (empty && empty.parentElement) empty.parentElement.insertBefore(list, empty);
       else p.modal.append(list);
     }
-    for (const r of rows) list.prepend(r);
+    for (let i = rows.length - 1; i >= 0; i--) list.prepend(rows[i]);
     // our row becomes the selection so Enter picks it
     const items = p.dlg.querySelectorAll(".command-palette-item");
     items.forEach((b) => { b.dataset.selected = "false"; });

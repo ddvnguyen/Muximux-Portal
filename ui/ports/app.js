@@ -1,18 +1,25 @@
-/* Port manager page (M-312 respec). Real table of registry + dynamic ports
- * with live status, saved profiles and active leases; apps render in the
- * iframe pane (tailnet URL > public hostname via shim > path proxy).
- * The palette (Ctrl/Cmd-K, portal-ext) is the primary open path; this page
- * is for management. No JS timers: one WebSocket per session keeps leases
- * alive server-side. */
+/* Port manager page (M-315). Themed like Muximux; Open does what the
+ * palette does: lease the port and select it as the app tab in the portal
+ * (#lease-<port>). Profiles and the detail pane stay on this page.
+ * No JS timers: one WebSocket per session keeps leases alive server-side. */
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const sidKey = "portal.ports.session";
 const probeKey = "portal.ports.tailnet";
 
+function newSid() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    }
+  } catch { /* insecure context: fall through */ }
+  return (Date.now().toString(36) + Math.random().toString(36).slice(2, 14)).slice(0, 16);
+}
+
 let sid = sessionStorage.getItem(sidKey);
 if (!sid) {
-  sid = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  sid = newSid();
   sessionStorage.setItem(sidKey, sid);
 }
 
@@ -66,15 +73,32 @@ async function loadTable() {
     const tds = tr.children;
     tds[0].textContent = e.title || e.id;
     tds[1].textContent = ":" + e.port;
-    tds[2].textContent = e.live ? "● live" : "○ down";
-    tds[2].classList.add(e.live ? "live" : "down");
-    tds[3].textContent = viaLabel(e);
-    tds[4].textContent = `${e.open || "auto"}${e.spa ? " · SPA" : ""}`;
+    const dot = document.createElement("span");
+    dot.textContent = e.live ? "● live" : "○ down";
+    dot.className = e.live ? "st-live" : "st-down";
+    tds[2].append(dot);
+    const via = document.createElement("span");
+    via.className = "pill";
+    via.textContent = viaLabel(e);
+    tds[3].append(via);
+    const prof = document.createElement("span");
+    prof.className = "pill";
+    prof.textContent = `${e.open || "auto"}${e.spa ? " · SPA" : ""}`;
+    tds[4].append(prof);
     const lease = e.lease;
-    tds[5].textContent = lease ? `leased (${lease.sessions} session${lease.sessions === 1 ? "" : "s"})` : "—";
+    if (lease) {
+      const l = document.createElement("span");
+      l.className = "lease-active";
+      l.textContent = `leased (${lease.sessions} session${lease.sessions === 1 ? "" : "s"})`;
+      tds[5].append(l);
+    } else {
+      tds[5].textContent = "—";
+    }
     const openBtn = document.createElement("button");
     openBtn.textContent = "Open";
-    openBtn.onclick = () => openPort(e.port, {});
+    openBtn.className = "primary";
+    openBtn.title = "Open as an app tab in the portal (same as the palette)";
+    openBtn.onclick = () => openAsApp(e.port);
     const profBtn = document.createElement("button");
     profBtn.textContent = "Profile";
     profBtn.onclick = () => { doOpen(e.port, {}, true); };
@@ -97,9 +121,12 @@ async function loadTable() {
 }
 
 function viaLabel(e) {
+  // effective path for `auto` (M-315 gap 4): the public host renders only
+  // on an explicit `public` profile choice, never by default
+  if ((e.open || "auto") === "public" && e.public) return "public";
+  if ((e.open || "auto") === "tailnet") return e.tailnet_url ? "tailnet" : "tailnet?";
   if (e.tailnet_url && probeOk) return "tailnet";
   if (e.tailnet_url) return "tailnet?";
-  if (e.public) return "public";
   return "proxy";
 }
 
@@ -135,6 +162,36 @@ function openPort(port, overrides) {
     return; // hashchange handler does the open
   }
   doOpen(port, overrides, false);
+}
+
+// M-315 gap 1: Open does exactly what the palette does — create/select the
+// port's lease, then select it as the app tab in the portal (#lease-<port>).
+// Same request body as the palette (openPort in ext.js), same destination.
+async function openAsApp(port) {
+  showMsg(`Opening :${port} as an app…`);
+  let body = null;
+  try {
+    const res = await fetch("/ports/v1/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port, session: sid, probe_ok: probeOk }),
+    });
+    body = await res.json();
+    if ((body && body.action === "refuse") || res.status === 403) {
+      refuse(body.reason || body.error || "Port denied.");
+      return;
+    }
+    if (!body || body.error || !body.lease) {
+      refuse((body && (body.error + (body.detail ? `: ${body.detail}` : ""))) || `HTTP ${res.status}`);
+      return;
+    }
+  } catch {
+    refuse("ports service unreachable.");
+    return;
+  }
+  showMsg("");
+  // leave the manager for the portal root: the lease tab lives there
+  location.href = `/#lease-${port}`;
 }
 
 async function doOpen(port, overrides, showForm) {

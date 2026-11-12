@@ -8,9 +8,18 @@ const $ = (id) => document.getElementById(id);
 const sidKey = "portal.lease.session";
 const leaseKey = "portal.lease.ids";
 
+function newSid() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    }
+  } catch { /* insecure context: fall through */ }
+  return (Date.now().toString(36) + Math.random().toString(36).slice(2, 14)).slice(0, 16);
+}
+
 let sid = sessionStorage.getItem(sidKey);
 if (!sid) {
-  sid = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  sid = newSid();
   sessionStorage.setItem(sidKey, sid);
 }
 

@@ -1,17 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="muximux">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ports — portal</title>
 <link rel="stylesheet" href="style.css">
+<script>
+// Match the Muximux theme (M-315 gap 1): the portal SPA stores its theme
+// variant in localStorage; mirror it here so the manager looks like part
+// of Muximux. Defaults to the Muximux dark theme when nothing is stored.
+try {
+  var variant = localStorage.getItem("muximux_theme_variant");
+  var dark = true;
+  if (variant === "light") dark = false;
+  else if (variant !== "dark" && window.matchMedia &&
+           window.matchMedia("(prefers-color-scheme: light)").matches) dark = false;
+  document.documentElement.setAttribute("data-theme", dark ? "muximux" : "muximux-light");
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+} catch (e) { /* private mode: dark defaults from CSS */ }
+</script>
 </head>
 <body>
 <header class="top">
+  <p class="backlink"><a href="/">← Portal apps</a></p>
   <h1>Local ports</h1>
   <p class="sub">Tip: press Ctrl/Cmd-K anywhere in the portal and type
-  <code>port:3701</code> to open a port. Bookmarks like <code>#/3701</code>
-  reload and share. Only this page and the palette open ports — never a URL.</p>
+  <code>port:3701</code> to open a port as an app. <strong>Open</strong> below
+  does the same: it opens the port as an app tab in the portal
+  (<code>#lease-&lt;port&gt;</code> in the LEASES group). Bookmarks like
+  <code>#/3701</code> reload and share.</p>
   <p id="msg" class="msg" role="status"></p>
 </header>
 <main class="stage">
@@ -46,9 +63,9 @@
     <label class="check"><input id="pspa" type="checkbox"> SPA (needs tailnet or public host)</label>
     <label>Open mode
       <select id="popen">
-        <option value="auto">auto (tailnet → public → path proxy)</option>
+        <option value="auto">auto (tailnet → local proxy)</option>
         <option value="tailnet">tailnet (service hostname, in pane)</option>
-        <option value="public">public (hostname, in pane)</option>
+        <option value="public">public (explicit hostname, in pane)</option>
         <option value="embed">path proxy (in pane, may not render)</option>
       </select>
     </label>

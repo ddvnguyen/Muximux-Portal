@@ -60,78 +60,6 @@ class TestParseHash(unittest.TestCase):
         with self.assertRaises(ValueError):
             portpage.normalize_hash(99999)
 
-class TestResolve(unittest.TestCase):
-    def test_tailnet_first(self):
-        r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
-                             tailnet_reachable=True, serve_ok=True)
-        self.assertEqual((r["action"], r["gateway"]), ("new_tab", "tailnet"))
-        self.assertIn("ddv-server-00", r["url"])
-
-    def test_public_without_tailnet(self):
-        r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com")
-        self.assertEqual(r["url"], "https://multica.ddvnguyen.com")
-        self.assertEqual(r["gateway"], "none")
-
-    def test_wildcard(self):
-        r = portpage.resolve(4321, wildcard_live=True)
-        self.assertEqual((r["action"], r["gateway"]),
-                         ("new_tab", "wildcard"))
-        self.assertEqual(r["url"], "https://p4321.ddvnguyen.com/")
-
-    def test_wildcard_pending_falls_back_to_embed(self):
-        r = portpage.resolve(4321)
-        self.assertEqual(r["action"], "embed")
-        self.assertIn("/proxy/lease-4321/", r["url"])
-        self.assertIn("may not render", r["warning"])
-
-    def test_pinned_modes(self):
-        r = portpage.resolve(3701, profile={"open": "public"},
-                             public_url="https://multica.ddvnguyen.com",
-                             tailnet_reachable=True, serve_ok=True)
-        self.assertEqual(r["gateway"], "none")
-        r = portpage.resolve(3701, profile={"open": "tailnet"},
-                             public_url="https://multica.ddvnguyen.com",
-                             tailnet_reachable=False)
-        self.assertEqual(r["action"], "refuse")
-        r = portpage.resolve(3701, overrides={"open": "embed"},
-                             public_url="https://multica.ddvnguyen.com",
-                             tailnet_reachable=True, serve_ok=True)
-        self.assertEqual(r["action"], "embed")
-
-    def test_bad_port(self):
-        with self.assertRaises(ValueError):
-            portpage.resolve(99999)
-        with self.assertRaises(ValueError):
-            portpage.resolve("3701")
-
-
-class TestProfiles(unittest.TestCase):
-    def test_crud(self):
-        path = os.path.join(TMP_BASE, "m312-profiles.yaml")
-        if os.path.exists(path):
-            os.unlink(path)
-        try:
-            self.assertEqual(portpage.load_profiles(path), {})
-            saved = portpage.save_profile(path, {"port": 3701, "open": "public",
-                                                 "label": "Multica"})
-            self.assertEqual(saved["open"], "public")
-            got = portpage.load_profiles(path)
-            self.assertEqual(got[3701]["label"], "Multica")
-            self.assertEqual(got[3701]["path"], "/")
-            self.assertTrue(portpage.delete_profile(path, 3701))
-            self.assertFalse(portpage.delete_profile(path, 3701))
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
-
-    def test_rejects(self):
-        for bad in ({"port": 0}, {"port": 99999}, {"port": "3701"},
-                    {"port": 3701, "open": "sideways"},
-                    {"port": 3701, "scheme": "ftp"},
-                    {"port": 3701, "path": "login"}):
-            with self.assertRaises(ValueError, msg=str(bad)):
-                portpage.validate_profile(bad)
-
 
 class TestResolve(unittest.TestCase):
     def test_tailnet_stored_and_reachable(self):
@@ -142,12 +70,15 @@ class TestResolve(unittest.TestCase):
         self.assertEqual((r["action"], r["gateway"]), ("frame", "tailnet"))
         self.assertEqual(r["url"], "https://multica.x.ts.net/")
 
-    def test_public_fallback_without_tailnet(self):
+    def test_auto_prefers_proxy_without_tailnet(self):
+        # M-315 gap 4: auto never renders the public host; only an explicit
+        # `public` profile choice does. The public URL stays as popout.
         r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
                              profile={"spa": True, "open": "auto", "path": "/"})
-        self.assertEqual((r["action"], r["gateway"]), ("frame", "public"))
+        self.assertEqual((r["action"], r["gateway"]), ("frame", "proxy"))
+        self.assertEqual(r["url"], "/proxy/lease-3701/")
+        self.assertIn("may not render", r["warning"])
         self.assertEqual(r["popout_url"], "https://multica.ddvnguyen.com")
-
     def test_plain_port_embeds(self):
         r = portpage.resolve(4321, profile=portpage.default_profile(4321))
         self.assertEqual((r["action"], r["gateway"]), ("frame", "proxy"))

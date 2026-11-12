@@ -222,10 +222,12 @@ def resolve(port, mode="auto", public_url=None, tailnet_reachable=False,
 
     Returns {ok, action, url, warning, reason, gateway, mode, spa} where
     action is `frame` (render in the /ports/ iframe pane) or `refuse`.
-    `frame_url` is the tailnet service hostname when the client probes
-    reachable and one is stored, else the portal path proxy (lease tab).
-    `popout_url` is the public hostname for the "pop out" button ('' if none).
-    The port int is validated; hosts come from the profile or the registry.
+    Order for `auto` (M-315): tailnet service hostname when the client
+    probes reachable and one is stored, else the portal path proxy
+    (lease tab). The public hostname renders only for an explicit `public`
+    saved-profile choice; it is never the auto default. `popout_url` is
+    the public hostname for the "pop out" button ('' if none). The port
+    int is validated; hosts come from the profile or the registry.
     """
     check_port_int(port)
     profile = profile or {}
@@ -255,7 +257,8 @@ def resolve(port, mode="auto", public_url=None, tailnet_reachable=False,
                       f":{port} yet" if tailnet_reachable else
                       "tailnet unreachable from this browser")
     if mode == "public":
-        # pinned public renders the public host in the pane via the shim
+        # explicit saved-profile choice only: render the public host in
+        # the pane via the shim; never the auto default (M-315 gap 4)
         if public_url:
             return frame(public_url, "public")
         return refuse(f"no public hostname is registered for :{port}")
@@ -263,8 +266,6 @@ def resolve(port, mode="auto", public_url=None, tailnet_reachable=False,
         return frame(tailnet, "tailnet")
     if mode == "embed":
         return frame(embed_url(port), "proxy")
-    if public_url and (spa or not tailnet_reachable):
-        return frame(public_url, "public")
     return frame(embed_url(port), "proxy")
 
 
