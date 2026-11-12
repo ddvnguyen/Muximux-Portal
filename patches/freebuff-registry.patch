@@ -1,12 +1,13 @@
 --- a/freebuff/server/src/orchestrator.ts
 +++ b/freebuff/server/src/orchestrator.ts
-@@ -219,6 +219,53 @@
+@@ -219,6 +219,56 @@
    return env
  }
  
 +function profileKey(profilePath: string): string {
 +  const match = profilePath.match(/accounts\/([^/]+)/)
-+  return match?.[1] ?? ''
++  if (match?.[1]) return match[1]
++  return `web-${path.basename(path.dirname(profilePath))}`
 +}
 +
 +type RegistryConfig = { url: string; token: string }
@@ -30,12 +31,12 @@
 +  path: string,
 +  body?: unknown,
 +  timeoutMs = 2000,
-+): Promise<void> {
++): Promise<number | null> {
 +  const controller = new AbortController()
 +  const timer = setTimeout(() => controller.abort(), timeoutMs)
 +  timer.unref?.()
 +  try {
-+    await fetch(`${cfg.url}${path}`, {
++    const response = await fetch(`${cfg.url}${path}`, {
 +      method,
 +      headers: {
 +        'X-Ports-Token': cfg.token,
@@ -44,8 +45,10 @@
 +      body: body !== undefined ? JSON.stringify(body) : undefined,
 +      signal: controller.signal,
 +    })
++    return response.status
 +  } catch {
 +    // Registry down must never affect Freebuff start.
++    return null
 +  } finally {
 +    clearTimeout(timer)
 +  }
@@ -54,7 +57,7 @@
  export async function startOrchestrator(
    options: StartOrchestratorOptions,
  ): Promise<OrchestratorHandle> {
-@@ -243,6 +290,8 @@
+@@ -243,6 +293,8 @@
    let readyAnnouncement: ReadyAnnouncement | null = null
    let settled = false
    let stopping = false
@@ -63,7 +66,7 @@
    const tail: string[] = []
  
    const appendTail = (line: string) => {
-@@ -337,6 +386,12 @@
+@@ -337,6 +389,12 @@
          )
          return
        }
@@ -76,16 +79,16 @@
        if (!stopping) {
          log.end()
          options.onUnexpectedExit?.(code ?? null, signal ?? null)
-@@ -349,6 +404,30 @@
+@@ -349,6 +407,36 @@
      if (!child.pid)
        throw new Error('Orchestrator started without a process id.')
  
 +    const cfg = registryConfig()
 +    if (cfg) {
-+      const key = profileKey(profilePath) || String(announcement.port)
++      const key = profileKey(profilePath)
 +      registeredId = `freebuff.engine[${key}]`
 +      const id = registeredId
-+      void registryRequest(cfg, 'POST', '/v1/ports', {
++      const record = {
 +        id,
 +        app: 'freebuff',
 +        lane: 'none',
@@ -93,13 +96,19 @@
 +        port: announcement.port,
 +        pid: child.pid,
 +        ttl: 60,
-+      })
++      }
++      void registryRequest(cfg, 'POST', '/v1/ports', record)
 +      heartbeat = setInterval(() => {
 +        if (child.exitCode !== null || child.signalCode !== null) {
 +          if (heartbeat) { clearInterval(heartbeat); heartbeat = null }
 +          return
 +        }
-+        void registryRequest(cfg, 'PUT', `/v1/ports/${encodeURIComponent(id)}`)
++        void (async () => {
++          const status = await registryRequest(cfg, 'PUT', `/v1/ports/${encodeURIComponent(id)}`)
++          if (status === 404 || status === 410) {
++            await registryRequest(cfg, 'POST', '/v1/ports', record)
++          }
++        })()
 +      }, 30_000)
 +      heartbeat.unref?.()
 +    }
@@ -107,7 +116,7 @@
      return {
        port: announcement.port,
        pid: child.pid,
-@@ -357,6 +436,12 @@
+@@ -357,6 +445,12 @@
        stop: async () => {
          if (stopping) return
          stopping = true
