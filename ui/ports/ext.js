@@ -1,8 +1,9 @@
-/* Portal palette extension (M-312). Injected into the Muximux page by
- * portal-front. Adds `port:N` / `:N` / `N` rows to the Cmd/Ctrl-K palette and
- * opens the port as a Muximux tab (lease API + hash select). Denied ports
- * show the reason inline. No Muximux code is modified. */
-"use strict";
+/* Portal palette extension (M-312, M-323 chooser). Injected into the Muximux
+ * page by portal-front. Adds `port:N` / `:N` / `N` rows to the Cmd/Ctrl-K
+ * palette and opens the port as a Muximux tab (lease API + hash select).
+ * Denied ports show the reason inline. M-323: client-side tailnet chooser —
+ * probe the tailnet gateway, rewrite /p/<n>/ iframes to it, badge tabs.
+ * No Muximux code is modified. */
 
 const PORT_RE = /^(?:port:|:)?(\d{1,5})$/i;
 let registry = null;
@@ -211,4 +212,59 @@ new MutationObserver(() => {
     hookInput(p.input);
     refresh();
   }
+  rewritePortIframes();
 }).observe(document.documentElement, { childList: true, subtree: true });
+
+/* -- tailnet chooser (M-323) ----------------------------------------------
+ * portal.ddvnguyen.com is the only URL. When this browser can reach the
+ * tailnet gateway directly, /p/<n>/ iframes are rewritten to it (faster,
+ * no Cloudflare hop); otherwise they stay on the Cloudflare path.
+ * Chromium's Local Network Access may show a one-time "local network
+ * access" prompt for portal.ddvnguyen.com; without the grant the probe
+ * fails and the portal silently stays on the Cloudflare path. */
+
+const TAILNET_HOST = "https://ddv-server-00.zubron-denebola.ts.net";
+const PROBE_TTL_MS = 60 * 1000;
+let tailnetOk = null;   // null = unknown, true/false = probed
+let tailnetAt = 0;
+let tailnetProbe = null;
+
+async function probeTailnet(force) {
+  const now = Date.now();
+  if (!force && tailnetOk !== null && now - tailnetAt < PROBE_TTL_MS) return tailnetOk;
+  if (tailnetProbe) return tailnetProbe;
+  tailnetProbe = (async () => {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 2000);
+      await fetch(`${TAILNET_HOST}/pgw-ping`, { mode: "no-cors", cache: "no-store", signal: ctl.signal });
+      clearTimeout(t);
+      tailnetOk = true;
+    } catch { tailnetOk = false; }
+    tailnetAt = Date.now();
+    tailnetProbe = null;
+    try { sessionStorage.setItem("portal.ext.tailnet", tailnetOk ? "1" : "0"); } catch { /* private mode */ }
+    return tailnetOk;
+  })();
+  return tailnetProbe;
+}
+
+function rewritePortIframes() {
+  if (tailnetOk !== true) return;
+  for (const f of document.querySelectorAll('iframe[src^="/p/"]')) {
+    try {
+      f.src = TAILNET_HOST + f.getAttribute("src");
+      f.setAttribute("allow", "local-network-access");
+    } catch { /* leave on Cloudflare path */ }
+  }
+  for (const f of document.querySelectorAll(`iframe[src^="${TAILNET_HOST}/p/"]:not([allow])`)) {
+    try { f.setAttribute("allow", "local-network-access"); } catch { /* noop */ }
+  }
+}
+
+// refresh the probe when the tab becomes visible again (laptop roams networks)
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) probeTailnet().then(rewritePortIframes);
+});
+// early probe so iframes created on load are rewritten on arrival
+probeTailnet().then(rewritePortIframes);

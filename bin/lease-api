@@ -2,7 +2,7 @@
 """ports service — /ports/ page + palette extension backend (M-312 respec).
 
 M-249 built the lease proxy (Muximux app "Lease :<port>" at
-/proxy/lease-<port>/). M-312 keeps it and adds, on the same service:
+/p/<port>/). M-312 keeps it and adds, on the same service:
 
   page  GET /ports/ (+ /ports/app.js, /ports/style.css, /ports/ext.js) —
         port manager table + bookmarkable `#/<port>` hash + per-port form.
@@ -65,12 +65,11 @@ def make_mux_add(base, group):
     def mux_add(name, port):
         mux_api(base, "POST", "/api/apps", {
             "name": name,
-            "url": f"http://127.0.0.1:{port}",  # 127.0.0.1 only, never a request-supplied host
+            "url": f"/p/{port}/",  # portal gateway (M-323); relative, works on either host
             "group": group,
             "enabled": True,
             "open_mode": "iframe",
-            "proxy": True,
-            "proxy_skip_tls_verify": True,
+            "proxy": False,
         })
     return mux_add
 

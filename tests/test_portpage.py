@@ -76,13 +76,13 @@ class TestResolve(unittest.TestCase):
         r = portpage.resolve(3701, public_url="https://multica.ddvnguyen.com",
                              profile={"spa": True, "open": "auto", "path": "/"})
         self.assertEqual((r["action"], r["gateway"]), ("frame", "proxy"))
-        self.assertEqual(r["url"], "/proxy/lease-3701/")
+        self.assertEqual(r["url"], "/p/3701/")
         self.assertIn("may not render", r["warning"])
         self.assertEqual(r["popout_url"], "https://multica.ddvnguyen.com")
     def test_plain_port_embeds(self):
         r = portpage.resolve(4321, profile=portpage.default_profile(4321))
         self.assertEqual((r["action"], r["gateway"]), ("frame", "proxy"))
-        self.assertEqual(r["url"], "/proxy/lease-4321/")
+        self.assertEqual(r["url"], "/p/4321/")
         self.assertEqual(r["warning"], "")
 
     def test_spa_warns_in_proxy(self):

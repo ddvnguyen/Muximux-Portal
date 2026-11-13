@@ -67,7 +67,7 @@ class TestLeaseLifecycle(unittest.TestCase):
         lease, created = self.reg.create(4096, "s1")
         self.assertTrue(created)
         self.assertEqual(lease["name"], "Lease :4096")
-        self.assertEqual(lease["url"], "/proxy/lease-4096/")
+        self.assertEqual(lease["url"], "/p/4096/")
         self.assertIn(("add", "Lease :4096", 4096), self.mux)
         self.assertEqual(self.audit[0], ("open", 4096, None))
 

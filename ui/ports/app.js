@@ -33,24 +33,32 @@ function showMsg(text, isErr) {
   $("msg").classList.toggle("err", !!isErr);
 }
 
-/* -- tailnet probe (respec: stays, but not part of the spike) ------------- */
+/* -- tailnet probe (M-323 chooser: 2 s abort, 60 s cache, visibility refresh) - */
 
-async function probeTailnet() {
-  if (probeDone) return probeOk;
+async function probeTailnet(force) {
+  const now = Date.now();
+  if (!force && probeDone && now - (probeTailnet._at || 0) < 60 * 1000) return probeOk;
   probeDone = true;
-  const probe = "https://ddv-server-00.zubron-denebola.ts.net/ports-probe";
+  const probe = "https://ddv-server-00.zubron-denebola.ts.net/pgw-ping";
   try {
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 4000);
+    const t = setTimeout(() => ctl.abort(), 2000);
     await fetch(probe, { mode: "no-cors", cache: "no-store", signal: ctl.signal });
     clearTimeout(t);
     probeOk = true;
   } catch {
     probeOk = false;
   }
-  sessionStorage.setItem(probeKey, probeOk ? "1" : "0");
+  probeTailnet._at = Date.now();
+  try { sessionStorage.setItem(probeKey, probeOk ? "1" : "0"); } catch { /* private mode */ }
+  const badge = document.getElementById("gwbadge");
+  if (badge) badge.textContent = probeOk ? "tailnet" : "cloudflare";
   return probeOk;
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) probeTailnet(true).then(() => loadTable());
+});
 
 /* -- manager table -------------------------------------------------------- */
 

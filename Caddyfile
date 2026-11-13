@@ -10,6 +10,17 @@
 
 http://portal.ddvnguyen.com:3720 {
 	log
+	import routes/pgw.inc
+	import routes/lease.inc
+	import routes/ports.inc
+	import routes/front.inc
+}
+
+# Tailnet gateway (M-237, Owner: 2 gateways). tailscale serve --https=443 -> :3720; Host = node MagicDNS name.
+# Rollback: delete this block, `tailscale serve --https=443 off`.
+http://ddv-server-00.zubron-denebola.ts.net:3720 {
+	log
+	import routes/pgw.inc
 	import routes/lease.inc
 	import routes/ports.inc
 	import routes/front.inc

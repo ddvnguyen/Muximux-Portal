@@ -203,7 +203,7 @@ def tailnet_frame_url(port, profile, overrides=None):
 
 def embed_url(port):
     check_port_int(port)
-    return f"/proxy/lease-{port}/"
+    return f"/p/{port}/"
 
 
 def with_path(url, profile, overrides=None):

@@ -2,7 +2,7 @@
 """leaselib — lease lifecycle for the open-any-port proxy (M-249).
 
 A lease maps one loopback port to one Muximux proxied tab ("Lease :<port>",
-served at /proxy/lease-<port>/). The lease exists only while at least one
+served at /p/<port>/). The lease exists only while at least one
 portal session WebSocket holds it: liveness is the SERVER's protocol-level
 ping (browser answers even in a background tab), never a browser JS timer.
 
@@ -103,7 +103,7 @@ class Lease:
             "id": self.id,
             "port": self.port,
             "name": self.name,
-            "url": f"/proxy/lease-{self.port}/",
+            "url": f"/p/{self.port}/",
             "created_at": self.created_at,
             "cap_at": self.cap_at,
             "close_at": self.close_at,

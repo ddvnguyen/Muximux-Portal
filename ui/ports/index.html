@@ -27,8 +27,14 @@ try {
   <p class="sub">Tip: press Ctrl/Cmd-K anywhere in the portal and type
   <code>port:3701</code> to open a port as an app. <strong>Open</strong> below
   does the same: it opens the port as an app tab in the portal
-  (<code>#lease-&lt;port&gt;</code> in the LEASES group). Bookmarks like
+  (<code>#lease-&lt;port&gt;</code> in the LEASES group). Gateway:
+  <span id="gwbadge">checking…</span>. Bookmarks like
   <code>#/3701</code> reload and share.</p>
+  <p class="sub">Tailnet path: when this browser can reach the tailnet
+  gateway, port tabs load directly over Tailscale (faster, no Cloudflare
+  hop). Chromium may ask once for "local network access" for
+  portal.ddvnguyen.com — grant it, otherwise the portal silently stays on
+  the Cloudflare path.</p>
   <p id="msg" class="msg" role="status"></p>
 </header>
 <main class="stage">
