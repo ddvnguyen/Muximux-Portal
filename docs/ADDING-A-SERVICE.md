@@ -38,3 +38,27 @@ Known breakers: `<base href>`, CSP nonces vs the injected shim, hard-coded absol
 - A per-service smoke test in `tests/e2e/` (first load, login if needed, WS 101) run by a new `bin/portal-compat <port>` (to build, M-323; `bin/ports check` already exists and only checks registry drift).
 - Origin guard (ADR decision 11): state-changing methods and WS upgrades require a real `Origin` in {portal host, tailnet host, localhost, 127.0.0.1}; forged origins get 403. Override per port with `origin: none|<explicit>` in `port-profiles.yaml`.
 - No service is added to `gateway-apps.json` without passing section 4 with evidence on the card.
+
+## 7. Perf baseline (M-341, 2026-11-14, same machine `ddv-server`)
+Chunk `/_next/static/chunks/02iy0-j94q3_r.js` (Multica :3701), 5-run medians:
+| Path | Bytes on wire (gzip offered) | p50 latency |
+| --- | --- | --- |
+| Direct `:3701` | 8,553 B (`Content-Encoding: gzip`) | ~1.2 ms |
+| Gateway `:3738` (identity — strips `Accept-Encoding` upstream) | 35,647 B | ~5.3 ms |
+| Portal Caddy `:3720` after M-341 (`encode zstd gzip`, typed match) | **8,710 B** (`Content-Encoding: gzip`; `zstd` when offered) | ~5.4 ms (encode adds no measurable latency) |
+What M-341 changed: `routes/pgw.inc` encodes `/p/*` (one value per
+`header` line, `*` suffix required — upstream Content-Types carry `; charset=`
+params and the matcher is exact; same-header lines are OR'd; no
+`text/event-stream` line so SSE keeps streaming under `flush_interval -1`);
+`lib/pgw/sw.js` skips cross-origin subresources, serves `/_next/static/*`
+cache-first (content-hash URLs, no stale risk), streams non-GET/HEAD bodies
+(`duplex: half`); `bin/portal-gw` streams request bodies upstream
+(was `await request.read()`) with an explicit keep-alive pool (100/20, 30 s).
+Scroll/render: headless rAF benchmark on the login document shows no SW
+jank (181 frames/3 s, worst 17 ms, identical pre/post-control); ext.js
+MutationObserver adds nothing measurable on 200 DOM inserts (0 longtasks
+with and without). The Owner's lag matches DevTools-open profiling
+(Network recording + 85 console errors on their screenshot), not the
+gateway path — retest with DevTools closed before further render work.
+Rollback per change is in the commit messages (`git log --oneline -4` from
+`2ec577e`).
