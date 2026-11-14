@@ -1,6 +1,6 @@
 diff -ruN rev/freebuff/server/src/index.ts live2/freebuff/server/src/index.ts
 --- a/freebuff/server/src/index.ts	2026-11-13 23:49:51.732088832 +0700
-+++ b/freebuff/server/src/index.ts	2026-11-14 17:00:31.786795829 +0700
++++ b/freebuff/server/src/index.ts	2026-11-14 19:10:56.136050840 +0700
 @@ -4,13 +4,17 @@
  import { createAuth } from './auth'
  import { lanAddresses, loadWebServerConfig } from './config'
@@ -166,7 +166,7 @@ diff -ruN rev/freebuff/server/src/index.ts live2/freebuff/server/src/index.ts
      resourcesDir: bundle.resourcesDir,
 diff -ruN rev/freebuff/server/src/multi-engine.ts live2/freebuff/server/src/multi-engine.ts
 --- a/freebuff/server/src/multi-engine.ts	1970-01-01 08:00:00.000000000 +0800
-+++ b/freebuff/server/src/multi-engine.ts	2026-11-14 17:00:31.786795829 +0700
++++ b/freebuff/server/src/multi-engine.ts	2026-11-14 19:10:56.136050840 +0700
 @@ -0,0 +1,385 @@
 +/**
 + * Multi-engine front for daemon-spawned Freebuff Desktop engines (M-322).
@@ -555,7 +555,7 @@ diff -ruN rev/freebuff/server/src/multi-engine.ts live2/freebuff/server/src/mult
 +}
 diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
 --- a/freebuff/server/src/proxy.ts	2026-11-13 23:49:51.732009392 +0700
-+++ b/freebuff/server/src/proxy.ts	2026-11-14 17:00:31.785795809 +0700
++++ b/freebuff/server/src/proxy.ts	2026-11-14 19:10:56.136050840 +0700
 @@ -34,7 +34,15 @@
    auth: Auth | null
    secureCookie: boolean
@@ -572,7 +572,7 @@ diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
  
  export type ProxyHandle = {
    port: number
-@@ -120,6 +128,19 @@
+@@ -120,6 +128,17 @@
      .replaceAll(upstreamOrigin(port), '')
      .replaceAll(`http://localhost:${port}`, '')
  }
@@ -583,16 +583,14 @@ diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
 + * style-src/default-src, so an inline-style badge needs no CSP change.
 + */
 +function stampVersionBadge(body: string, options: ProxyOptions): string {
-+  const version = options.versionLabel?.trim() || 'unknown'
-+  const account = options.accountLabel?.trim() || 'engine'
-+  const title = `${version} · ${account}`
++  const title = options.versionLabel?.trim() || 'unknown'
 +  const stamped = body.replace(/<title>.*?<\/title>/i, `<title>${title}</title>`)
 +  return `${stamped}<div style="position:fixed;bottom:8px;right:8px;z-index:99999;background:#111;color:#fff;font:12px sans-serif;padding:4px 8px;border-radius:6px;opacity:.85">${title}</div>`
 +}
  
  function originAllowed(request: Request): boolean {
    const origin = request.headers.get('origin')
-@@ -229,6 +250,9 @@
+@@ -229,6 +248,9 @@
    const headers: Record<string, string> = {
      origin: upstreamOrigin(options.orchestratorPort),
    }
@@ -602,7 +600,7 @@ diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
    const cookie = request.headers.get('cookie')
    if (cookie && options.auth) {
      const filtered = stripCookie(cookie, [options.auth.cookieName])
-@@ -349,6 +373,9 @@
+@@ -349,6 +371,9 @@
    headers.set('x-forwarded-for', clientKey(request, server))
    headers.set('x-forwarded-proto', options.secureCookie ? 'https' : 'http')
    headers.set('x-forwarded-host', url.host)
@@ -612,7 +610,7 @@ diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
  
    const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
    const upstreamUrl = `${upstreamOrigin(options.orchestratorPort)}${url.pathname}${url.search}`
-@@ -419,7 +446,10 @@
+@@ -419,7 +444,10 @@
              await upstream.text(),
              options.orchestratorPort,
            )
@@ -626,7 +624,7 @@ diff -ruN rev/freebuff/server/src/proxy.ts live2/freebuff/server/src/proxy.ts
      statusText: upstream.statusText,
 diff -ruN rev/freebuff/server/src/__tests__/multi-engine.test.ts live2/freebuff/server/src/__tests__/multi-engine.test.ts
 --- a/freebuff/server/src/__tests__/multi-engine.test.ts	1970-01-01 08:00:00.000000000 +0800
-+++ b/freebuff/server/src/__tests__/multi-engine.test.ts	2026-11-14 17:00:31.787795848 +0700
++++ b/freebuff/server/src/__tests__/multi-engine.test.ts	2026-11-14 19:10:56.136050840 +0700
 @@ -0,0 +1,218 @@
 +import { describe, expect, it } from 'bun:test'
 +
@@ -706,8 +704,8 @@ diff -ruN rev/freebuff/server/src/__tests__/multi-engine.test.ts live2/freebuff/
 +      ).json()
 +      expect(echo.launch).toBe('launch-secret-1')
 +      const doc = await (await fetch(`${base}/`)).text()
-+      expect(doc).toContain('<title>9.9.9 · owner@example.com</title>')
-+      expect(doc).toContain('9.9.9 · owner@example.com</div>')
++      expect(doc).toContain('<title>9.9.9</title>')
++      expect(doc).toContain('>9.9.9</div>')
 +    } finally {
 +      for (const state of engines.values()) await state.proxy.stop()
 +      upstream.stop(true)
@@ -839,7 +837,7 @@ diff -ruN rev/freebuff/server/src/__tests__/multi-engine.test.ts live2/freebuff/
 +      const doc = await (
 +        await fetch(`http://127.0.0.1:${proxy.port}/`)
 +      ).text()
-+      expect(doc).toContain('<title>1.2.3 · local</title>')
++      expect(doc).toContain('<title>1.2.3</title>')
 +    } finally {
 +      await proxy.stop()
 +      upstream.stop(true)
