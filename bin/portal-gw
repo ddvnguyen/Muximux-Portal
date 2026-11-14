@@ -403,10 +403,15 @@ async def gw(request):
             print("portal-gw: ws error", port, rest, repr(e), flush=True)
         await wsd.close()
         return wsd
-    body = await request.read()
+    # M-341: stream the client body upstream instead of buffering it whole
+    # (was `body = await request.read()`). Bounded prefetch only to decide
+    # GET-with-body vs empty; HTML still buffers the *response* for shim
+    # injection below, everything else streams both ways.
+    _has_body = request.can_read_body
+    _body_gen = request.content.iter_chunked(65536) if _has_body else None
     try:
         async with sess.request(request.method, up + rest, headers=hdr,
-                                 data=body or None,
+                                 data=_body_gen,
                                  allow_redirects=False) as r:
             h = {}
             for k, v in r.headers.items():
@@ -454,8 +459,13 @@ async def gw(request):
 
 
 async def init(app):
+    # M-341: explicit keep-alive pool. Default connector already reuses
+    # connections, but the 100-connection / 30s-cleanup ceiling bounds
+    # tail-latency under burst fan-out (was unbounded default).
     app["sess"] = aiohttp.ClientSession(
         auto_decompress=True, cookie_jar=aiohttp.DummyCookieJar(),
+        connector=aiohttp.TCPConnector(limit=100, limit_per_host=20,
+                                       keepalive_timeout=30),
         timeout=aiohttp.ClientTimeout(total=None, sock_connect=5))
 
 
