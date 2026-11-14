@@ -290,18 +290,16 @@ def websocket_upstream_headers(headers):
             if k.lower() in ("cookie", "user-agent", "origin", "host")}
 
 
-def cookie_names(header):
-    """Return cookie names without retaining or exposing values."""
-    return sorted({part.partition("=")[0].strip()
-                   for part in header.split(";")
-                   if part.partition("=")[0].strip()})
-
-
-def set_cookie_attributes(cookie):
-    """Return the cookie name and attributes, omitting the cookie value."""
-    parts = [part.strip() for part in cookie.split(";")]
-    name = parts[0].partition("=")[0].strip()
-    return name, parts[1:]
+def rewrite_cockpit_html_paths(html):
+    """Keep Cockpit's HTML URLs inside the port gateway on its first load."""
+    html = re.sub(
+        r'(?i)(<base\b[^>]*\bhref\s*=\s*)(["\'])/(["\'])',
+        lambda match: match.group(1) + match.group(2) + "/p/9090/" + match.group(3),
+        html)
+    return re.sub(
+        r'(?i)(\b(?:src|href|action|poster|data)\s*=\s*)(["\'])/cockpit/',
+        lambda match: match.group(1) + match.group(2) + "/p/9090/cockpit/",
+        html)
 
 async def sw(request):
     """COMBINED worker: ours first, then the live Muximux /sw.js verbatim."""
@@ -324,12 +322,6 @@ async def gw(request):
     rest = "/" + request.match_info.get("rest", "")
     if port not in allowed_ports():
         return web.Response(status=403, text="port denied")
-    if port == 9090:
-        print("portal-gw: cockpit request " + json.dumps({
-            "path": request.path,
-            "cookie_names": cookie_names(request.headers.get("Cookie", "")),
-            "websocket": request.headers.get("Upgrade", "").lower() == "websocket",
-        }, separators=(",", ":")), flush=True)
     _method = request.method.upper()
     _is_ws = request.headers.get("Upgrade", "").lower() == "websocket"
     if _method in ("POST", "PUT", "PATCH", "DELETE") or _is_ws:
@@ -433,16 +425,12 @@ async def gw(request):
             for c in r.headers.getall("Set-Cookie", []):
                 rewritten = rewrite_cookie(c, request_is_https(request))
                 resp.headers.add("Set-Cookie", rewritten)
-                if port == 9090:
-                    name, attrs = set_cookie_attributes(rewritten)
-                    print("portal-gw: cockpit set-cookie " + json.dumps({
-                        "name": name,
-                        "attributes": attrs,
-                    }, separators=(",", ":")), flush=True)
             ct = r.headers.get("Content-Type", "")
             if "text/html" in ct:
                 raw = await r.read()
                 s = raw.decode("utf-8", "replace")
+                if port == 9090:
+                    s = rewrite_cockpit_html_paths(s)
                 m = re.search(r"<head[^>]*>", s, re.I)
                 s = (s[:m.end()] + SHIM % port + s[m.end():]) if m else SHIM % port + s
                 out = s.encode()

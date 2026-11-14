@@ -57,18 +57,21 @@ class CockpitGatewayCookie(unittest.TestCase):
         self.assertEqual(forwarded["Origin"], "http://localhost:9090")
         self.assertNotIn("Sec-WebSocket-Key", forwarded)
 
-    def test_diagnostic_cookie_logging_exposes_names_without_values(self):
-        names = gateway.cookie_names("cockpit=private-value; csrf=another-secret")
-        self.assertEqual(names, ["cockpit", "csrf"])
-        self.assertNotIn("private-value", str(names))
-        self.assertNotIn("another-secret", str(names))
+    def test_cockpit_base_and_absolute_urls_stay_inside_gateway(self):
+        html = ('<base href="/">'
+                '<script src="cockpit/static/login.js"></script>'
+                '<script src="/cockpit/static/other.js"></script>'
+                '<form action="/cockpit/login"></form>')
+        self.assertEqual(
+            gateway.rewrite_cockpit_html_paths(html),
+            '<base href="/p/9090/">'
+            '<script src="cockpit/static/login.js"></script>'
+            '<script src="/p/9090/cockpit/static/other.js"></script>'
+            '<form action="/p/9090/cockpit/login"></form>')
 
-    def test_set_cookie_diagnostic_keeps_only_name_and_attributes(self):
-        name, attrs = gateway.set_cookie_attributes(
-            "cockpit=private-value; Path=/; Secure; SameSite=None; Partitioned")
-        self.assertEqual(name, "cockpit")
-        self.assertEqual(attrs, ["Path=/", "Secure", "SameSite=None", "Partitioned"])
-        self.assertNotIn("private-value", str((name, attrs)))
+    def test_cockpit_html_rewriter_leaves_unrelated_paths_unchanged(self):
+        html = '<script src="/api/app.js"></script><a href="/">home</a>'
+        self.assertEqual(gateway.rewrite_cockpit_html_paths(html), html)
 
 
 if __name__ == "__main__":
