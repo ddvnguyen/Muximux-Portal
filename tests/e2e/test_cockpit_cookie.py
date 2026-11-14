@@ -57,6 +57,19 @@ class CockpitGatewayCookie(unittest.TestCase):
         self.assertEqual(forwarded["Origin"], "http://localhost:9090")
         self.assertNotIn("Sec-WebSocket-Key", forwarded)
 
+    def test_diagnostic_cookie_logging_exposes_names_without_values(self):
+        names = gateway.cookie_names("cockpit=private-value; csrf=another-secret")
+        self.assertEqual(names, ["cockpit", "csrf"])
+        self.assertNotIn("private-value", str(names))
+        self.assertNotIn("another-secret", str(names))
+
+    def test_set_cookie_diagnostic_keeps_only_name_and_attributes(self):
+        name, attrs = gateway.set_cookie_attributes(
+            "cockpit=private-value; Path=/; Secure; SameSite=None; Partitioned")
+        self.assertEqual(name, "cockpit")
+        self.assertEqual(attrs, ["Path=/", "Secure", "SameSite=None", "Partitioned"])
+        self.assertNotIn("private-value", str((name, attrs)))
+
 
 if __name__ == "__main__":
     unittest.main()
