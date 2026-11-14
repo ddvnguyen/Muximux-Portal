@@ -25,3 +25,6 @@ One portal at `https://portal.ddvnguyen.com` (Muximux front end, behind Cloudfla
 - Cockpit post-login: its `/cockpit/socket` WebSocket never reaches the gateway (M-323 item 1).
 - Chooser, CORS/PNA headers, per-app matrix (opencode, Grafana, DSH-X, Freebuff Desktop, DSH-Z): M-323.
 - Cloudflare Access service token for the test run (Owner-only; see M-237).
+
+## Decision 11 (2026-11-14): origin handling
+Default `origin: rewrite` for every port, guarded: the gateway validates the real `Origin`/`Sec-Fetch-Site` on state-changing methods and WebSocket upgrades against {portal host, tailnet host, localhost/127.0.0.1} before rewriting to `http://localhost:<port>`; others get 403. Reason: the gateway sets `SameSite=None` cookies, so an unguarded rewrite would allow cross-site CSRF into the upstream apps. Override per port with `origin: none|<explicit>` in `port-profiles.yaml`. Implemented by M-323.
