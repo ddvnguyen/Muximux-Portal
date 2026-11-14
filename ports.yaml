@@ -19,7 +19,7 @@ dynamic:
     role: engine
     match: "orchestrator/orchestrator\\.js"
     instance_key: {env: FREEBUFF_DESKTOP_STATE_PATH, extract: "accounts/([^/]+)"}
-    portal: {title: Freebuff engine, tab: auto}
+    portal: {title: Freebuff engine, tab: false}
   # opencode: fixed server is static (agents.opencode 4096); `opencode2 serve`
   # instances are dynamic (key = port).
   - id: agents.opencode

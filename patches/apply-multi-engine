@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Idempotent apply of freebuff-multi-engine.patch (M-322) to the Freebuff web runtime.
+# Usage: apply-multi-engine [RELEASE_DIR]
+# Defaults to /mnt/workspace/clouds/freebuff/current. Re-running is a no-op
+# if the multi-engine module is already present.
+set -euo pipefail
+
+ROOT="${1:-/mnt/workspace/clouds/freebuff/current}"
+TARGET="$ROOT/freebuff/server/src/multi-engine.ts"
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH="$PATCH_DIR/freebuff-multi-engine.patch"
+
+if [[ ! -f "$ROOT/freebuff/server/src/proxy.ts" ]]; then
+  echo "apply-multi-engine: target not found: $ROOT/freebuff/server/src/proxy.ts" >&2
+  exit 1
+fi
+if [[ ! -f "$PATCH" ]]; then
+  echo "apply-multi-engine: patch not found: $PATCH" >&2
+  exit 1
+fi
+
+# Idempotency: multi-engine module present and proxy carries the option.
+if [[ -f "$TARGET" ]] && grep -q 'displayVersion' "$TARGET"; then
+  echo "apply-multi-engine: already applied to $ROOT"
+  exit 0
+fi
+
+if (cd "$ROOT" && patch -p1 --forward --no-backup-if-mismatch < "$PATCH") >/mnt/workspace/tmp/apply-multi-engine.out 2>&1; then
+  cat /mnt/workspace/tmp/apply-multi-engine.out 2>/dev/null || true
+  echo "apply-multi-engine: applied to $ROOT"
+else
+  cat /mnt/workspace/tmp/apply-multi-engine.out 2>/dev/null || true
+  echo "apply-multi-engine: FAILED" >&2
+  exit 1
+fi
