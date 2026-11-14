@@ -43,9 +43,10 @@ not a git checkout. `freebuff-multi-engine.patch` fronts daemon-spawned engines.
 - `index.ts`: single-engine proxy also stamps the badge
   (`FREEBUFF_WEB_VERSION` env override, else bundle version;
   `readAppVersion` is darwin-only).
-- Badge text is compact: `<semver>-<YYMMMDD.HHMM> · <account>` where the stamp
-  is the engine process start time (server-local, via `/proc/<pid>`), plain
-  `<semver>` when unknown. No `Freebuff Desktop` prefix.
+- Badge text is the version tag only: `<semver>-<YYMMMDD.HHMM>` where the
+  stamp is the engine process start time (server-local, via `/proc/<pid>`),
+  plain `<semver>` when unknown. No product prefix, no account email (the
+  portal tab and registration title still carry the account).
 
 ## Apply
 ```
