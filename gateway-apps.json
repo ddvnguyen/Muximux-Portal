@@ -2,8 +2,13 @@
   "apps": [
     "multica.web",
     "Cockpit",
-    "hydra.prom"
+    "hydra.prom",
+    "agents.opencode",
+    "hydra.grafana",
+    "dsh-x.web",
+    "freebuff.web"
   ],
+  "registered_apps": ["freebuff.proxy[a44d008f3]"],
   "claims": [
     {
       "port": 3701,
