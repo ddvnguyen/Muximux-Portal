@@ -13,6 +13,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   9090:
     label: Cockpit
     scheme: https
@@ -22,6 +23,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   3181:
     label: DSH-X
     scheme: http
@@ -31,6 +33,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   3180:
     label: DSH-Z
     scheme: http
@@ -40,6 +43,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   4096:
     label: opencode
     scheme: http
@@ -49,6 +53,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   4320:
     label: Freebuff Desktop
     scheme: http
@@ -58,6 +63,7 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite
   3000:
     label: Grafana
     scheme: http
@@ -67,3 +73,4 @@ profiles:
     pinned: false
     tailnet_url: ""
     spa: true
+    origin: rewrite

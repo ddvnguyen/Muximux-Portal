@@ -36,4 +36,5 @@ Known breakers: `<base href>`, CSP nonces vs the injected shim, hard-coded absol
 ## 6. Guardrails to make this hold in most cases
 - A registry-vs-allowlist test: every Muximux app with `url: /p/<port>/` must be allowed by the gateway (no 403).
 - A per-service smoke test in `tests/e2e/` (first load, login if needed, WS 101) run by a new `bin/portal-compat <port>` (to build, M-323; `bin/ports check` already exists and only checks registry drift).
+- Origin guard (ADR decision 11): state-changing methods and WS upgrades require a real `Origin` in {portal host, tailnet host, localhost, 127.0.0.1}; forged origins get 403. Override per port with `origin: none|<explicit>` in `port-profiles.yaml`.
 - No service is added to `gateway-apps.json` without passing section 4 with evidence on the card.
