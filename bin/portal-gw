@@ -162,8 +162,6 @@ def _origin_host_allowed(origin):
 def origin_allowed(request, port):
     """Validate the real Origin/Sec-Fetch-Site for state-changing requests."""
     mode = port_origin_mode(port)
-    if isinstance(mode, str) and mode.lower() == "none":
-        return True
     real_origin = None
     try:
         real_origin = request.headers.get("Origin")
@@ -320,7 +318,7 @@ async def gw(request):
     _omode = str(port_origin_mode(port)).strip()
     if "Origin" in request.headers:
         if _omode.lower() == "none":
-            hdr["Origin"] = request.headers.get("Origin")
+            pass  # validate above, but do not forward Origin upstream
         elif _omode.lower() == "rewrite" or _omode.lower() == "":
             hdr["Origin"] = f"http://localhost:{port}"
         else:
