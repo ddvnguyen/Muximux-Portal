@@ -7,6 +7,7 @@ profiles:
   3701:
     label: Multica
     scheme: http
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
@@ -17,6 +18,7 @@ profiles:
   9090:
     label: Cockpit
     scheme: https
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
@@ -27,6 +29,7 @@ profiles:
   3181:
     label: DSH-X
     scheme: http
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
@@ -37,6 +40,7 @@ profiles:
   3180:
     label: DSH-Z
     scheme: http
+    host: 10.88.0.1
     path: /
     open: auto
     newtab: false
@@ -47,6 +51,7 @@ profiles:
   4096:
     label: opencode
     scheme: http
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
@@ -57,6 +62,7 @@ profiles:
   4320:
     label: Freebuff Desktop
     scheme: http
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
@@ -67,6 +73,7 @@ profiles:
   3000:
     label: Grafana
     scheme: http
+    host: 127.0.0.1
     path: /
     open: auto
     newtab: false
