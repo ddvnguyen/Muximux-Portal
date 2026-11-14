@@ -78,6 +78,34 @@ class CockpitGatewayCookie(unittest.TestCase):
         html = '<script src="/api/app.js"></script><a href="/">home</a>'
         self.assertEqual(gateway.rewrite_cockpit_html_paths(html), html)
 
+    def test_cockpit_shell_base_stays_inside_gateway(self):
+        # Post-login shell: absolute-path base (nested @localhost iframe root)
+        html = ('<base href="/cockpit/@localhost/shell/index.html">'
+                '<link href="shell.css" rel="stylesheet" />')
+        self.assertEqual(
+            gateway.rewrite_cockpit_html_paths(html),
+            '<base href="/p/9090/cockpit/@localhost/shell/index.html">'
+            '<link href="shell.css" rel="stylesheet" />')
+
+    def test_cockpit_rewriter_takes_throwaway_port(self):
+        html = ('<base href="/cockpit/@localhost/shell/index.html">'
+                '<script src="/cockpit/static/login.js"></script>')
+        self.assertEqual(
+            gateway.rewrite_cockpit_html_paths(html, 45991),
+            '<base href="/p/45991/cockpit/@localhost/shell/index.html">'
+            '<script src="/p/45991/cockpit/static/login.js"></script>')
+
+    def test_cockpit_login_base_still_rewritten(self):
+        self.assertEqual(
+            gateway.rewrite_cockpit_html_paths('<base href="/">'),
+            '<base href="/p/9090/">')
+
+    def test_cockpit_rewriter_ignores_absolute_and_empty_base(self):
+        html = '<base href="https://example.com/">'
+        self.assertEqual(gateway.rewrite_cockpit_html_paths(html), html)
+        html = '<base href="">'
+        self.assertEqual(gateway.rewrite_cockpit_html_paths(html), html)
+
 
 if __name__ == "__main__":
     unittest.main()
