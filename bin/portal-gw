@@ -55,7 +55,6 @@ REGISTRY_URL = "http://127.0.0.1:3726/ports/v1/registry"
 LEASES_URL = "http://127.0.0.1:3726/lease/v1/leases"
 DENY_FILE = os.environ.get("PORTAL_GW_DENY_FILE") or os.path.join(HERE, "ports-deny.yaml")
 REGISTERED_FILE = os.path.join(HERE, "ports.registered.json")
-REGISTERED_FILE = os.path.join(HERE, "ports.registered.json")
 FALLBACK_PORTS = {3701, 9090}
 CACHE_SECONDS = 5
 
@@ -88,17 +87,6 @@ def allowed_ports():
             reg = json.load(r)
         ports = {int(e["port"]) for e in reg.get("entries", [])
                  if isinstance(e, dict) and e.get("port")}
-        # lease-api's registry omits registered ports because its merged view
-        # has an empty listening set. Respect registration expiry directly.
-        try:
-            with open(REGISTERED_FILE) as f:
-                registered = json.load(f).get("entries", [])
-            now = time.time()
-            ports |= {int(e["port"]) for e in registered
-                      if isinstance(e, dict) and e.get("port")
-                      and now <= e.get("last_seen", 0) + e.get("ttl", 60)}
-        except FileNotFoundError:
-            pass  # No self-registered processes yet.
         # lease-api's registry omits registered ports because its merged view
         # has an empty listening set. Respect registration expiry directly.
         try:
