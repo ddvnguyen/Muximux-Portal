@@ -8,7 +8,7 @@ A service is **portal-ready** only when it passes the gateway check in section 4
 ## 1. Register the port (pick one)
 | Case | How | Result |
 | --- | --- | --- |
-| Permanent service | Add an entry to `ports.yaml` (`id: <app>[-<lane>].<role>`, `app`, `lane`, `role`, `port`, `health`, `portal: {title, tab: true}`). Free port: `bin/ports alloc` (range 45000-45999) | Static registry; appears in `bin/ports list` and the portal within ~30 s |
+| Permanent service | Add an entry to `ports.yaml` (`id: <app>[-<lane>].<role>`, `app`, `lane`, `role`, `port`, `health`, `portal: {title, tab: true}`). Allocate with `bin/ports alloc <app> <lane> <role>` (range 45000-45999; it writes the `ports.yaml` entry) | Static registry; appears in `bin/ports list` and the portal within ~30 s |
 | Self-registering process (engines) | `POST` `{id, app, lane, role, port, pid?, ttl?}` to `ports-api` `/v1/ports`, `PUT /v1/ports/<id>` as heartbeat (verify) | `ports.registered.json` (never hand-edit) |
 | Ad hoc, one-off | Portal "Ports"/lease page (`/lease/`), `POST /ports/v1/open {port}` | Short-lived Muximux app |
 Never hard-code a port: resolve with `bin/ports get <id> --port`.
@@ -35,5 +35,5 @@ Known breakers: `<base href>`, CSP nonces vs the injected shim, hard-coded absol
 
 ## 6. Guardrails to make this hold in most cases
 - A registry-vs-allowlist test: every Muximux app with `url: /p/<port>/` must be allowed by the gateway (no 403).
-- A per-service smoke test in `tests/e2e/` (first load, login if needed, WS 101) run by `bin/ports check <id>` (to build, M-323).
+- A per-service smoke test in `tests/e2e/` (first load, login if needed, WS 101) run by a new `bin/portal-compat <port>` (to build, M-323; `bin/ports check` already exists and only checks registry drift).
 - No service is added to `gateway-apps.json` without passing section 4 with evidence on the card.
