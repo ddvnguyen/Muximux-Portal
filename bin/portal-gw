@@ -328,8 +328,85 @@ def rewrite_cockpit_html_paths(html, port=9090):
                        + f"/p/{port}/cockpit/"),
         html)
 
+def sw_without_lifecycle(mux):
+    """Drop Muximux's install/activate handlers from the combined worker.
+
+    At gateway scope (127.0.0.1:3738, path /) their precache list
+    ('./', './index.html', './manifest.json') 404s, so cache.addAll
+    rejects and the whole worker (including our port-mapping fetch
+    handler) never installs -- portal-wide, for every app. Their
+    activate handler would also wipe every non-mux cache (our pgw-map
+    included). notificationclick/fetch handlers are kept verbatim.
+    """
+    out = []
+    pos = 0
+    needle = "self.addEventListener("
+    while True:
+        start = mux.find(needle, pos)
+        if start < 0:
+            out.append(mux[pos:])
+            break
+        name = re.match(r"self\.addEventListener\(\s*['\"]([^'\"]+)['\"]",
+                        mux[start:])
+        if not name or name.group(1) not in ("install", "activate"):
+            out.append(mux[pos:start + len(needle)])
+            pos = start + len(needle)
+            continue
+        brace = mux.find("{", start)
+        if brace < 0:
+            out.append(mux[pos:])
+            break
+        depth, i = 0, brace
+        in_str = None
+        line_comment = block_comment = False
+        while i < len(mux):
+            ch, nxt = mux[i], mux[i + 1] if i + 1 < len(mux) else ""
+            if line_comment:
+                if ch == "\n":
+                    line_comment = False
+            elif block_comment:
+                if ch == "*" and nxt == "/":
+                    block_comment = False
+                    i += 1
+            elif in_str:
+                if ch == "\\":
+                    i += 1
+                elif ch == in_str:
+                    in_str = None
+            elif ch == "/" and nxt == "/":
+                line_comment = True
+                i += 1
+            elif ch == "/" and nxt == "*":
+                block_comment = True
+                i += 1
+            elif ch in "'\"`":
+                in_str = ch
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        j = i + 1
+        while j < len(mux) and mux[j] in " \t)":
+            j += 1
+        if j < len(mux) and mux[j] == ";":
+            j += 1
+        while j < len(mux) and mux[j] in " \t\n":
+            j += 1
+        out.append(mux[pos:start])
+        pos = j
+    return "".join(out)
+
+
 async def sw(request):
-    """COMBINED worker: ours first, then the live Muximux /sw.js verbatim."""
+    """COMBINED worker: ours first, then Muximux's (lifecycle handlers cut).
+
+    Muximux's fetch/notification handlers stay verbatim; its install /
+    activate handlers are gateway-scope-wrong (see sw_without_lifecycle)
+    and would prevent installation entirely.
+    """
     try:
         ours = open(SWFILE).read()
     except OSError as e:
@@ -340,7 +417,8 @@ async def sw(request):
     except Exception:
         mux = ""
     return web.Response(
-        text=ours + "\n// ---- muximux sw.js (verbatim, M-323) ----\n" + mux,
+        text=(ours + "\n// ---- muximux sw.js (lifecycle cut, M-337) ----\n"
+              + sw_without_lifecycle(mux)),
         content_type="text/javascript",
         headers={"Cache-Control": "no-store", "Service-Worker-Allowed": "/"})
 
