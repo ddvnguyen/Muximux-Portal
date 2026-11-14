@@ -428,7 +428,9 @@ async def close(app):
     await app["sess"].close()
 
 
-app = web.Application()
+# aiohttp default client_max_size is 1 MiB -> 413 on uploads (Owner report 2026-11-14)
+MAX_BODY = int(os.environ.get("PORTAL_GW_MAX_BODY", str(256 * 1024 * 1024)))
+app = web.Application(client_max_size=MAX_BODY)
 app.on_startup.append(init)
 app.on_cleanup.append(close)
 
