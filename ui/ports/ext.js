@@ -7,6 +7,43 @@
 
 const PORT_RE = /^(?:port:|:)?(\d{1,5})$/i;
 let registry = null;
+let claimsPromise = null;
+
+function loadClaims() {
+  if (!claimsPromise) claimsPromise = fetch("/portal-ext/gateway-apps.json", { cache: "no-store" })
+    .then((r) => r.ok ? r.json() : { claims: [] })
+    .then((data) => data.claims || [])
+    .catch(() => { claimsPromise = null; return []; });
+  return claimsPromise;
+}
+
+function claimedUrl(text, claims) {
+  try {
+    const url = new URL(text.trim());
+    if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return null;
+    const claim = claims.find((c) => Array.isArray(c.hosts) && c.hosts.includes(url.hostname) &&
+      typeof c.prefix === "string" && url.pathname.startsWith(c.prefix));
+    return claim ? { claim, path: url.pathname + url.search + url.hash } : null;
+  } catch { return null; }
+}
+
+function openClaim(claim, path) {
+  // Muximux resolves paths relative to the app's /p/<port>/ base.
+  location.hash = `#${claim.app}?path=${encodeURIComponent(path.replace(/^\//, ""))}`;
+}
+
+async function restoreClaimedNavigation() {
+  const params = new URLSearchParams(location.search);
+  const port = Number(params.get("gateway_port"));
+  const path = params.get("gateway_path");
+  if (!port || !path) return;
+  const claim = (await loadClaims()).find((c) => c.port === port && path.startsWith(c.prefix));
+  if (!claim) return;
+  const fragment = location.hash;
+  history.replaceState(history.state, "", "/");
+  openClaim(claim, path + fragment);
+}
+restoreClaimedNavigation();
 
 let sid = null;
 try { sid = sessionStorage.getItem("portal.ext.session"); } catch { sid = null; }
@@ -42,7 +79,7 @@ function palette() {
   let list = modal.querySelector("ul, ol");
   return { dlg, modal, input, list };
 }
-function resultItem(port, title, sub, denied) {
+function resultItem(port, title, sub, denied, action) {
   const li = document.createElement("li");
   li.setAttribute("data-portal-ext", "1");
   li.style.cssText = "max-width:100%;overflow:hidden;";
@@ -60,7 +97,7 @@ function resultItem(port, title, sub, denied) {
     '<div style="font-size:13px;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div></div>';
   btn.children[1].children[0].textContent = title;
   btn.children[1].children[1].textContent = sub;
-  if (!denied) btn.addEventListener("click", () => openPort(port));
+  if (!denied) btn.addEventListener("click", action || (() => openPort(port)));
   else btn.setAttribute("aria-disabled", "true");
   li.append(btn);
   return li;
@@ -105,10 +142,11 @@ function manageRow() {
 }
 
 let refreshing = false;
+let refreshPending = false;
 let lastQuery = null;
 
 async function refresh(force) {
-  if (refreshing && !force) return;
+  if (refreshing) { refreshPending = true; return; }
   refreshing = true;
   try {
     const p = palette();
@@ -119,8 +157,13 @@ async function refresh(force) {
     clearOurs(p.dlg);
     const port = parsePort(q);
     const reg = await loadRegistry();
+    const deep = claimedUrl(q, await loadClaims());
     const ql = (q || "").trim().toLowerCase();
     const rows = [];
+    if (deep) rows.push(resultItem(deep.claim.port, "Open Multica link", "opens this page in the portal", false, () => {
+      p.dlg.remove();
+      openClaim(deep.claim, deep.path);
+    }));
     if (port != null) {
       let reason = null;
       try {
@@ -131,7 +174,7 @@ async function refresh(force) {
       if (reason) rows.push(resultItem(port, `Port ${port} — denied`, reason, true));
       else rows.push(resultItem(port, `Open local port ${port}`, "opens as an app in the portal", false));
     }
-    if (ql && ql !== "port:" && port == null) {
+    if (ql && ql !== "port:" && port == null && !deep) {
       for (const e of reg.entries || []) {
         const hay = `${e.title} ${e.id} :${e.port}`.toLowerCase();
         if (hay.includes(ql) && rows.length < 6) {
@@ -160,6 +203,10 @@ async function refresh(force) {
     if (first) first.dataset.selected = "true";
   } finally {
     refreshing = false;
+    if (refreshPending) {
+      refreshPending = false;
+      queueMicrotask(() => refresh());
+    }
   }
 }
 async function openPort(port) {
@@ -237,9 +284,11 @@ async function probeTailnet(force) {
     try {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 2000);
-      await fetch(`${TAILNET_HOST}/pgw-ping`, { mode: "no-cors", cache: "no-store", signal: ctl.signal });
-      clearTimeout(t);
-      tailnetOk = true;
+      let res;
+      try {
+        res = await fetch(`${TAILNET_HOST}/pgw-ping`, { mode: "cors", cache: "no-store", signal: ctl.signal });
+      } finally { clearTimeout(t); }
+      tailnetOk = res.ok;
     } catch { tailnetOk = false; }
     tailnetAt = Date.now();
     tailnetProbe = null;
@@ -250,15 +299,17 @@ async function probeTailnet(force) {
 }
 
 function rewritePortIframes() {
-  if (tailnetOk !== true) return;
-  for (const f of document.querySelectorAll('iframe[src^="/p/"]')) {
-    try {
-      f.src = TAILNET_HOST + f.getAttribute("src");
-      f.setAttribute("allow", "local-network-access");
-    } catch { /* leave on Cloudflare path */ }
-  }
-  for (const f of document.querySelectorAll(`iframe[src^="${TAILNET_HOST}/p/"]:not([allow])`)) {
-    try { f.setAttribute("allow", "local-network-access"); } catch { /* noop */ }
+  for (const f of document.querySelectorAll("iframe[src]")) {
+    const src = f.getAttribute("src");
+    if (tailnetOk === true && /^\/p\/\d+(?:\/|$)/.test(src)) {
+      const allow = f.getAttribute("allow") || "";
+      if (!allow.split(";").some((item) => item.trim().split(/\s+/)[0] === "local-network-access")) {
+        f.setAttribute("allow", `${allow}${allow ? "; " : ""}local-network-access`);
+      }
+      f.src = TAILNET_HOST + src;
+    } else if (tailnetOk === false && src.startsWith(`${TAILNET_HOST}/p/`)) {
+      f.src = src.slice(TAILNET_HOST.length);
+    }
   }
 }
 

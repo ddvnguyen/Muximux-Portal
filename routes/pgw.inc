@@ -2,8 +2,17 @@
 # /p/<port>/ entry + root service worker. Rollback: `git checkout
 # routes/pgw.inc` + `caddy reload` (or point back at the spike on :3738).
 handle /p/* {
-	reverse_proxy 127.0.0.1:3738 {
-		flush_interval -1
+	@top_document {
+		method GET
+		header Sec-Fetch-Dest document
+	}
+	handle @top_document {
+		reverse_proxy 127.0.0.1:3736
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3738 {
+			flush_interval -1
+		}
 	}
 }
 handle /pgw-sw.js {

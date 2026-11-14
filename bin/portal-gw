@@ -34,6 +34,9 @@ Rollback: point routes/pgw.inc back at :3738 and restart the spike, or
 Logs: logs/portal-gw.log (stdout of the unit).
 """
 import asyncio
+import base64
+from functools import lru_cache
+import hashlib
 import json
 import os
 import re
@@ -50,7 +53,7 @@ sys.path.insert(0, os.path.join(HERE, "lib"))
 LISTEN = ("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 3738)
 REGISTRY_URL = "http://127.0.0.1:3726/ports/v1/registry"
 LEASES_URL = "http://127.0.0.1:3726/lease/v1/leases"
-DENY_FILE = os.path.join(HERE, "ports-deny.yaml")
+DENY_FILE = os.environ.get("PORTAL_GW_DENY_FILE") or os.path.join(HERE, "ports-deny.yaml")
 FALLBACK_PORTS = {3701, 9090}
 CACHE_SECONDS = 5
 
@@ -119,6 +122,53 @@ else if(sw){(async function(){try{var reg=await sw.register('/sw.js',{scope:'/'}
 })();</script>"""
 
 
+@lru_cache(maxsize=256)
+def shim_hash(port):
+    source = (SHIM % port).removeprefix("<script>").removesuffix("</script>")
+    digest = base64.b64encode(hashlib.sha256(source.encode()).digest()).decode()
+    return "'sha256-" + digest + "'"
+
+
+def allow_shim(csp, port):
+    """Allow exactly our injected script while retaining the upstream CSP."""
+    directives = [part.strip() for part in csp.split(";") if part.strip()]
+
+    def find(name):
+        return next((i for i, part in enumerate(directives)
+                     if part.split(None, 1)[0].lower() == name), None)
+    index = find("script-src-elem")
+    if index is None:
+        index = find("script-src")
+    effective = directives[index] if index is not None else (
+        directives[find("default-src")] if find("default-src") is not None else "")
+    sources = effective.split()[1:]
+    if "'unsafe-inline'" in sources and not any(
+            s.startswith(("'nonce-", "'sha256-", "'sha384-", "'sha512-")) for s in sources):
+        return csp
+    token = shim_hash(port)
+    if index is None:
+        default = find("default-src")
+        if default is None:
+            return csp
+        directives.append("script-src " + directives[default].partition(" ")[2] + " " + token)
+    else:
+        directives[index] += " " + token
+    return "; ".join(directives)
+
+
+def rewrite_cookie(cookie, secure):
+    cookie = re.sub(r";\s*domain=[^;]*", "", cookie, flags=re.I)
+    if re.search(r";\s*path=", cookie, flags=re.I):
+        cookie = re.sub(r";\s*path=[^;]*", "; Path=/", cookie, flags=re.I)
+    else:
+        cookie += "; Path=/"
+    if secure:
+        cookie = re.sub(r";\s*(?:samesite|partitioned)(?:=[^;]*)?", "", cookie, flags=re.I)
+        if not re.search(r";\s*secure(?:;|$)", cookie, flags=re.I):
+            cookie += "; Secure"
+        cookie += "; SameSite=None; Partitioned"
+    return cookie
+
 async def sw(request):
     """COMBINED worker: ours first, then the live Muximux /sw.js verbatim."""
     try:
@@ -134,7 +184,6 @@ async def sw(request):
         text=ours + "\n// ---- muximux sw.js (verbatim, M-323) ----\n" + mux,
         content_type="text/javascript",
         headers={"Cache-Control": "no-store", "Service-Worker-Allowed": "/"})
-
 
 async def gw(request):
     port = int(request.match_info["port"])
@@ -217,6 +266,8 @@ async def gw(request):
                     v = re.sub(r"frame-ancestors[^;]*;?", "", v)
                     if not v.strip():
                         continue
+                    if "text/html" in r.headers.get("Content-Type", ""):
+                        v = allow_shim(v, port)
                 if kl == "location" and v.startswith("/") and not v.startswith("//"):
                     v = f"/p/{port}" + v
                 if kl == "set-cookie":
@@ -224,11 +275,8 @@ async def gw(request):
                 h[k] = v
             resp = web.StreamResponse(status=r.status, headers=h)
             for c in r.headers.getall("Set-Cookie", []):
-                c = re.sub(r";\s*Domain=[^;]*", "", c)
-                if request.headers.get("X-Forwarded-Proto", "").lower() == "https":
-                    c = re.sub(r";\s*(SameSite|Partitioned)(=[^;]*)?", "", c,
-                               flags=re.I) + "; SameSite=None; Secure; Partitioned"
-                resp.headers.add("Set-Cookie", c)
+                resp.headers.add("Set-Cookie", rewrite_cookie(
+                    c, request.headers.get("X-Forwarded-Proto", "").lower() == "https"))
             ct = r.headers.get("Content-Type", "")
             if "text/html" in ct:
                 raw = await r.read()
@@ -264,10 +312,15 @@ app.on_cleanup.append(close)
 
 
 async def ping(r):
-    return web.Response(text="pgw-ok", headers={
-        "Access-Control-Allow-Origin": "*",
+    headers = {
         "Access-Control-Allow-Private-Network": "true",
-        "Cache-Control": "no-store"})
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Cache-Control": "no-store",
+        "Vary": "Origin",
+    }
+    if r.headers.get("Origin") == "https://portal.ddvnguyen.com":
+        headers["Access-Control-Allow-Origin"] = "https://portal.ddvnguyen.com"
+    return web.Response(text="pgw-ok", headers=headers)
 
 
 app.router.add_route("*", "/pgw-ping", ping)
@@ -276,5 +329,6 @@ app.router.add_get("/sw.js", sw)
 app.router.add_route("*", "/p/{port:\\d+}",
                      lambda r: web.HTTPFound(f"/p/{r.match_info['port']}/"))
 app.router.add_route("*", "/p/{port:\\d+}/{rest:.*}", gw)
-web.run_app(app, host=LISTEN[0], port=LISTEN[1],
-            print=lambda *_: print("portal-gw listening", LISTEN, flush=True))
+if __name__ == "__main__":
+    web.run_app(app, host=LISTEN[0], port=LISTEN[1],
+                print=lambda *_: print("portal-gw listening", LISTEN, flush=True))

@@ -43,9 +43,11 @@ async function probeTailnet(force) {
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 2000);
-    await fetch(probe, { mode: "no-cors", cache: "no-store", signal: ctl.signal });
-    clearTimeout(t);
-    probeOk = true;
+    let res;
+    try {
+      res = await fetch(probe, { mode: "cors", cache: "no-store", signal: ctl.signal });
+    } finally { clearTimeout(t); }
+    probeOk = res.ok;
   } catch {
     probeOk = false;
   }
