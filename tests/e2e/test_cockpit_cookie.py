@@ -38,6 +38,11 @@ class CockpitGatewayCookie(unittest.TestCase):
         self.assertTrue(gateway.request_is_https(Request("portal.ddvnguyen.com", "http")))
         self.assertTrue(gateway.request_is_https(Request("localhost:3738", "https")))
 
+    def test_https_external_host_survives_local_proxy_host_rewrite(self):
+        req = Request("127.0.0.1:3738", "http")
+        req.headers["X-Forwarded-Host"] = "ddv-server-00.zubron-denebola.ts.net"
+        self.assertTrue(gateway.request_is_https(req))
+
     def test_plain_local_http_does_not_receive_cross_site_cookie_attributes(self):
         req = Request("127.0.0.1:3738", "http")
         self.assertFalse(gateway.request_is_https(req))

@@ -280,8 +280,10 @@ def request_is_https(request):
     hosts are served by the TLS Caddy sites and must receive secure cookies.
     """
     forwarded = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
-    host = request.headers.get("Host", "").split(":", 1)[0].lower()
-    return forwarded == "https" or host in HTTPS_HOSTS
+    hosts = (request.headers.get("Host", "") + "," +
+             request.headers.get("X-Forwarded-Host", "")).split(",")
+    hosts = {value.strip().split(":", 1)[0].lower() for value in hosts}
+    return forwarded == "https" or bool(hosts & HTTPS_HOSTS)
 
 
 def websocket_upstream_headers(headers):
