@@ -149,6 +149,17 @@ def port_profile(port):
     return {}
 
 
+def port_keep_path(port):
+    """Ports whose SPA router must keep seeing the gateway prefix (M-375).
+
+    Default False: the head shim strips `/p/<port>` from `location` so
+    apps that build URLs from `location.pathname` keep working.
+    Paperclip reads the stripped `/` at boot and crashes React
+    (`useEffect` of null); it opts out per port via
+    `port-profiles.yaml`: `45000: {keep_path: true}`.
+    """
+    return bool(port_profile(port).get("keep_path", False))
+
 def port_origin_mode(port):
     mode = port_profile(port).get("origin", "rewrite")
     return "rewrite" if mode is None else mode
@@ -248,7 +259,7 @@ def shim_source(port):
     and pages without SW control need the same mapping.
     """
     targets = sorted(port_loopback_map(port))
-    head = ("""<script>(function(){var P='/p/%d';var L=%s;var W=window.WebSocket;
+    head = ("""<script>(function(){var P='/p/%d';var L=%s;var KEEP=%d;var W=window.WebSocket;
 function isLoop(u){try{var h=(u.hostname||'').toLowerCase();return h==='127.0.0.1'||h==='localhost'||h==='::1'}catch(e){return false}}
 function mapLoop(u){try{var q=+u.port;if(L.indexOf(q)>=0){return '/p/'+q+(u.pathname||'/')+(u.search||'')}}catch(e){}return null}
 function f(u){try{var rel=typeof u==='string'&&u.charAt(0)==='/';var a=new URL(u,location.href);
@@ -260,11 +271,11 @@ return f(u)}catch(e){return u}}
 var _fetch=window.fetch;window.fetch=function(u,o){if(typeof u==='string'||u instanceof URL){try{u=fw(u.toString())}catch(e){}}else if(u&&u.url){try{var n=fw(u.url);if(n!==u.url)u=new Request(n,u)}catch(e){}}return _fetch.call(this,u,o)};
 var _XO=window.XMLHttpRequest.prototype.open;window.XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=fw(u)}catch(e){}return _XO.apply(this,arguments)};
 window.WebSocket=function(u,p){u=fw(u);return p===undefined?new W(u):new W(u,p)};window.WebSocket.prototype=W.prototype;
-window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets)))
+window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_keep_path(port) else 0))
     tail = """var sw=navigator.serviceWorker;
 function ping(){return new Promise(function(res){if(!sw||!sw.controller)return res(false);var c=new MessageChannel(),t=setTimeout(function(){res(false)},400);c.port1.onmessage=function(){clearTimeout(t);res(true)};try{sw.controller.postMessage({pgw:'ping'},[c.port2])}catch(e){res(false)}})}
 var ok=false;try{ok=localStorage.getItem('__pgw_ok')==='1'}catch(e){}
-if(location.pathname.indexOf(P+'/')===0){try{history.replaceState(history.state,'',(location.pathname.slice(P.length)||'/')+location.search+location.hash)}catch(e){}}
+if(!KEEP&&location.pathname.indexOf(P+'/')===0){try{history.replaceState(history.state,'',(location.pathname.slice(P.length)||'/')+location.search+location.hash)}catch(e){}}
 if(sw){(async function(){try{var reg=await sw.register('/sw.js',{scope:'/'});try{await reg.update()}catch(e){}await sw.ready;
  var good=false;for(var i=0;i<14&&!good;i++){good=await ping();if(!good)await new Promise(function(r){setTimeout(r,250)})}
  if(good){try{localStorage.setItem('__pgw_ok','1')}catch(e){}}

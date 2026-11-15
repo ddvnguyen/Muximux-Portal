@@ -82,3 +82,15 @@ profiles:
     tailnet_url: ""
     spa: true
     origin: rewrite
+  45000:
+    label: Paperclip
+    scheme: http
+    host: 127.0.0.1
+    path: /
+    open: auto
+    newtab: false
+    pinned: false
+    tailnet_url: ""
+    spa: true
+    origin: rewrite
+    keep_path: true

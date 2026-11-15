@@ -82,6 +82,17 @@ csp = hdrs.get("Content-Security-Policy", "")
 cross_iframe = "frame-ancestors" not in csp.lower()
 checks.append(("cross_site_iframe", cross_iframe))
 
+# 7. no client-side crash screen (M-375: HTTP 200 hid Paperclip's React
+# "hit an error" boot crash behind the gateway for weeks)
+status, hdrs, body = req(f"/p/{PORT}/")
+try:
+    html = body.decode("utf-8", "replace")
+except Exception:
+    html = ""
+crash_markers = ("hit an error", "Something went wrong while running the app")
+no_crash_screen = status == 200 and not any(m in html for m in crash_markers)
+checks.append(("no_crash_screen", no_crash_screen))
+
 allpass = True
 for name, ok in checks:
     print(f"{name}: {'PASS' if ok else 'FAIL'}")
