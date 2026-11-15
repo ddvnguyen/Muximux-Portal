@@ -150,15 +150,25 @@ def port_profile(port):
 
 
 def port_keep_path(port):
-    """Ports whose SPA router must keep seeing the gateway prefix (M-375).
+    """Opt out of the head-shim history strip for one port (M-375).
 
-    Default False: the head shim strips `/p/<port>` from `location` so
+    Default False: the shim strips `/p/<port>` from `location` so
     apps that build URLs from `location.pathname` keep working.
-    Paperclip reads the stripped `/` at boot and crashes React
-    (`useEffect` of null); it opts out per port via
-    `port-profiles.yaml`: `45000: {keep_path: true}`.
+    Set `keep_path: true` only for apps whose router must keep seeing
+    the prefix. Independent from `prefix_hooks` below.
     """
     return bool(port_profile(port).get("keep_path", False))
+
+
+def port_prefix_hooks(port):
+    """Enable LINK+SCRIPT prefix hooks for one port (M-375).
+
+    Default False. Prefixes same-origin root hrefs/srcs on LINK and
+    SCRIPT nodes so vite-style dynamic chunks resolve under
+    `/p/<port>/…`. Paperclip needs these with the strip ON
+    (`keep_path: false` + `prefix_hooks: true`); other ports unaffected.
+    """
+    return bool(port_profile(port).get("prefix_hooks", False))
 
 def port_origin_mode(port):
     mode = port_profile(port).get("origin", "rewrite")
@@ -278,7 +288,7 @@ def shim_source(port):
     and pages without SW control need the same mapping.
     """
     targets = sorted(port_loopback_map(port))
-    head = ("""<script>(function(){var P='/p/%d';var L=%s;var KEEP=%d;var W=window.WebSocket;
+    head = ("""<script>(function(){var P='/p/%d';var L=%s;var HOOKS=%d;var DOSTRIP=%d;var W=window.WebSocket;
 function isLoop(u){try{var h=(u.hostname||'').toLowerCase();return h==='127.0.0.1'||h==='localhost'||h==='::1'}catch(e){return false}}
 function mapLoop(u){try{var q=+u.port;if(L.indexOf(q)>=0){return '/p/'+q+(u.pathname||'/')+(u.search||'')}}catch(e){}return null}
 function f(u){try{var rel=typeof u==='string'&&u.charAt(0)==='/';var a=new URL(u,location.href);
@@ -289,23 +299,23 @@ if(m!==null&&m!==undefined){var p=a.protocol||'';if(p.indexOf('ws')===0){var s=p
 return f(u)}catch(e){return u}}
 var _fetch=window.fetch;window.fetch=function(u,o){if(typeof u==='string'||u instanceof URL){try{u=fw(u.toString())}catch(e){}}else if(u&&u.url){try{var n=fw(u.url);if(n!==u.url)u=new Request(n,u)}catch(e){}}return _fetch.call(this,u,o)};
 var _XO=window.XMLHttpRequest.prototype.open;window.XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=fw(u)}catch(e){}return _XO.apply(this,arguments)};
-if(KEEP){try{
+if(HOOKS){try{
 /* M-375: keep_path apps (Paperclip) serve document HTML under /p/<port>/ but
    vite dynamic imports resolve against import.meta.url, which the gateway
    cannot rewrite. Prefix same-origin root hrefs/srcs on LINK+SCRIPT nodes
    (observer for parser-inserted, createElement patch for script-created)
-   so chunk fetches hit /p/<port>/…; other ports skip via KEEP=0. */
+   so chunk fetches hit /p/<port>/…; other ports skip via HOOKS=0. */
 var _prefixAttr=function(n,a){try{var h=n.getAttribute(a);if(h&&h.charAt(0)==='/'&&h.indexOf(P+'/')!==0){n.setAttribute(a,P+h);}}catch(e){}};
 var _obs=new MutationObserver(function(muts){try{for(var k=0;k<muts.length;k++){var ad=muts[k].addedNodes;for(var j=0;j<ad.length;j++){var n=ad[j];if(!n||!n.tagName)continue;if(n.tagName==='LINK'){_prefixAttr(n,'href');}else if(n.tagName==='SCRIPT'){_prefixAttr(n,'src');}}}}catch(e){}});try{_obs.observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
 /* Hook 2: patch document.createElement('link') so future preload links are born prefixed. */
 try{var _ce=document.createElement.bind(document);document.createElement=function(t,a){var el=_ce(t,a);if(el&&el.tagName==='LINK'){try{var _sh=Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype,'href').set;Object.defineProperty(el,'href',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_sh.call(this,v);},get:function(){return this.getAttribute('href');}});}catch(e){}}else if(el&&el.tagName==='SCRIPT'){try{var _ss=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src').set;Object.defineProperty(el,'src',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_ss.call(this,v);},get:function(){return this.getAttribute('src');}});}catch(e){}}return el;};}catch(e){}
 }catch(e){}}
 window.WebSocket=function(u,p){u=fw(u);return p===undefined?new W(u):new W(u,p)};window.WebSocket.prototype=W.prototype;
-window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_keep_path(port) else 0))
+window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_prefix_hooks(port) else 0, 0 if port_keep_path(port) else 1))
     tail = """var sw=navigator.serviceWorker;
 function ping(){return new Promise(function(res){if(!sw||!sw.controller)return res(false);var c=new MessageChannel(),t=setTimeout(function(){res(false)},400);c.port1.onmessage=function(){clearTimeout(t);res(true)};try{sw.controller.postMessage({pgw:'ping'},[c.port2])}catch(e){res(false)}})}
 var ok=false;try{ok=localStorage.getItem('__pgw_ok')==='1'}catch(e){}
-if(!KEEP&&location.pathname.indexOf(P+'/')===0){try{history.replaceState(history.state,'',(location.pathname.slice(P.length)||'/')+location.search+location.hash)}catch(e){}}
+if(DOSTRIP&&location.pathname.indexOf(P+'/')===0){try{history.replaceState(history.state,'',(location.pathname.slice(P.length)||'/')+location.search+location.hash)}catch(e){}}
 if(sw){(async function(){try{var reg=await sw.register('/sw.js',{scope:'/'});try{await reg.update()}catch(e){}await sw.ready;
  var good=false;for(var i=0;i<14&&!good;i++){good=await ping();if(!good)await new Promise(function(r){setTimeout(r,250)})}
  if(good){try{localStorage.setItem('__pgw_ok','1')}catch(e){}}

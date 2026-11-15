@@ -94,4 +94,5 @@ profiles:
     tailnet_url: ""
     spa: true
     origin: rewrite
-    keep_path: true
+    keep_path: false
+    prefix_hooks: true
