@@ -2,7 +2,7 @@
 # Static ports we choose (hand-edit or `bin/ports alloc`); dynamic families are
 # RULES — bin/portal-scan fills ports.dynamic.json from them every 30s.
 # Schema: id = <app>-[<lane>].<role>  (lane segment omitted iff lane: none)
-#   app  in [dsh mmx moct multica hydra agents freebuff]
+#   app  in [dsh mmx moct multica hydra agents freebuff paperclip]
 #   lane in [x z none];  portal.tab in [true false auto]
 # Never hand-edit ports.dynamic.json or ports.registered.json.
 version: 1
@@ -218,3 +218,13 @@ static:
     unit: hydra-dashboard.service
     health: http://127.0.0.1:8098/
     portal: {title: Hydra dashboard, tab: false}
+
+  - id: paperclip.web
+    app: paperclip
+    lane: none
+    role: web
+    port: 45000
+    bind: 127.0.0.1
+    unit: paperclip.service
+    health: http://127.0.0.1:45000/
+    portal: {title: Paperclip, tab: false}

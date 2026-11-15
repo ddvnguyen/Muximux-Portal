@@ -18,7 +18,7 @@ import time
 
 ENV_HOME = "PORTS_HOME"
 DEFAULT_HOME = "/mnt/workspace/portal"
-APPS = {"dsh", "mmx", "moct", "multica", "hydra", "agents", "freebuff"}
+APPS = {"dsh", "mmx", "moct", "multica", "hydra", "agents", "freebuff", "paperclip"}
 LANES = {"x", "z", "none"}
 TABS = {True, False, "auto"}
 ID_RE = re.compile(r"^([a-z][a-z0-9]*)(?:-([a-z0-9]+))?\.([a-z][a-z0-9]*)(?:\[[^\]]+\])?$")

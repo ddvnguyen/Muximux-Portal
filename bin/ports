@@ -216,7 +216,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pl = sub.add_parser("list", help="list all registered ports")
-    pl.add_argument("--app", help="filter by app (dsh|mmx|moct|multica|hydra|agents|freebuff)")
+    pl.add_argument("--app", help="filter by app (dsh|mmx|moct|multica|hydra|agents|freebuff|paperclip)")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(fn=cmd_list)
 
