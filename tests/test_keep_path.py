@@ -26,6 +26,16 @@ class KeepPath(unittest.TestCase):
         with patch.object(gateway, "port_profile", return_value={"keep_path": True}):
             self.assertIs(gateway.port_keep_path(45000), True)
 
+    def test_keep_hooks_gated_on_keep_flag(self):
+        with patch.object(gateway, "port_profile", return_value={}):
+            off = gateway.shim_source(3701)
+        with patch.object(gateway, "port_profile", return_value={"keep_path": True}):
+            on = gateway.shim_source(45000)
+        for name in ("MutationObserver", "_prefixAttr", "createElement"):
+            self.assertIn(name, on)
+        self.assertIn("if(KEEP){try{", on)
+        self.assertIn("if(KEEP){try{", off)  # runtime-gated; KEEP=0 skips
+
     def test_shim_gates_strip_per_port(self):
         with patch.object(gateway, "port_profile", return_value={}):
             off = gateway.shim_source(3701)

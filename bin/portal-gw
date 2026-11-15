@@ -289,6 +289,17 @@ if(m!==null&&m!==undefined){var p=a.protocol||'';if(p.indexOf('ws')===0){var s=p
 return f(u)}catch(e){return u}}
 var _fetch=window.fetch;window.fetch=function(u,o){if(typeof u==='string'||u instanceof URL){try{u=fw(u.toString())}catch(e){}}else if(u&&u.url){try{var n=fw(u.url);if(n!==u.url)u=new Request(n,u)}catch(e){}}return _fetch.call(this,u,o)};
 var _XO=window.XMLHttpRequest.prototype.open;window.XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=fw(u)}catch(e){}return _XO.apply(this,arguments)};
+if(KEEP){try{
+/* M-375: keep_path apps (Paperclip) serve document HTML under /p/<port>/ but
+   vite dynamic imports resolve against import.meta.url, which the gateway
+   cannot rewrite. Prefix same-origin root hrefs/srcs on LINK+SCRIPT nodes
+   (observer for parser-inserted, createElement patch for script-created)
+   so chunk fetches hit /p/<port>/…; other ports skip via KEEP=0. */
+var _prefixAttr=function(n,a){try{var h=n.getAttribute(a);if(h&&h.charAt(0)==='/'&&h.indexOf(P+'/')!==0){n.setAttribute(a,P+h);}}catch(e){}};
+var _obs=new MutationObserver(function(muts){try{for(var k=0;k<muts.length;k++){var ad=muts[k].addedNodes;for(var j=0;j<ad.length;j++){var n=ad[j];if(!n||!n.tagName)continue;if(n.tagName==='LINK'){_prefixAttr(n,'href');}else if(n.tagName==='SCRIPT'){_prefixAttr(n,'src');}}}}catch(e){}});try{_obs.observe(document.documentElement,{childList:true,subtree:true});}catch(e){}
+/* Hook 2: patch document.createElement('link') so future preload links are born prefixed. */
+try{var _ce=document.createElement.bind(document);document.createElement=function(t,a){var el=_ce(t,a);if(el&&el.tagName==='LINK'){try{var _sh=Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype,'href').set;Object.defineProperty(el,'href',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_sh.call(this,v);},get:function(){return this.getAttribute('href');}});}catch(e){}}else if(el&&el.tagName==='SCRIPT'){try{var _ss=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src').set;Object.defineProperty(el,'src',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_ss.call(this,v);},get:function(){return this.getAttribute('src');}});}catch(e){}}return el;};}catch(e){}
+}catch(e){}}
 window.WebSocket=function(u,p){u=fw(u);return p===undefined?new W(u):new W(u,p)};window.WebSocket.prototype=W.prototype;
 window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_keep_path(port) else 0))
     tail = """var sw=navigator.serviceWorker;
