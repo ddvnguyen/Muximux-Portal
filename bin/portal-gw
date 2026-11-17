@@ -8,6 +8,8 @@ either host.
 
   /p/<port>/...  strips the prefix, proxies to 127.0.0.1:<port>
                  (deny list + registry/lease allowlist below).
+  + PWA manifests on ports with `manifest_rewrite: true`
+                 get start_url/scope/icons/shortcuts prefixed to /p/<port>/.
   /sw.js         COMBINED service worker: ours (maps each /p/<port>/
                  document to its port, rewrites root-absolute requests
                  like /api, /_next, /cockpit/...) + the live Muximux /sw.js
@@ -375,6 +377,48 @@ def allow_shim(csp, port):
     return "; ".join(directives)
 
 
+def port_manifest_rewrite(port):
+    """Opt-in manifest prefix rewrite for PWA ports (M-404).
+
+    Rewrites the app manifest's root-absolute URLs (start_url, scope,
+    icons, shortcuts) under /p/<port>/ so an install from the portal tab
+    launches and icons resolve inside the gateway. Default off; other
+    ports stream the manifest untouched.
+    """
+    try:
+        return bool(port_profile(port).get("manifest_rewrite", False))
+    except Exception:
+        return False
+
+
+def rewrite_manifest_prefix(text, port):
+    """Prefix root-absolute manifest URL fields with /p/<port>."""
+    try:
+        import json
+        doc = json.loads(text)
+    except Exception:
+        return text
+    pre = f"/p/{port}"
+    def fix(u):
+        if isinstance(u, str) and u.startswith("/") and not u.startswith(pre + "/"):
+            return pre + u
+        return u
+    for key in ("start_url", "scope"):
+        if key in doc:
+            doc[key] = fix(doc[key])
+    icons = doc.get("icons")
+    if isinstance(icons, list):
+        for icon in icons:
+            if isinstance(icon, dict) and "src" in icon:
+                icon["src"] = fix(icon["src"])
+    shortcuts = doc.get("shortcuts")
+    if isinstance(shortcuts, list):
+        for sc in shortcuts:
+            if isinstance(sc, dict) and "url" in sc:
+                sc["url"] = fix(sc["url"])
+    return json.dumps(doc)
+
+
 def rewrite_cookie(cookie, secure):
     cookie = re.sub(r";\s*domain=[^;]*", "", cookie, flags=re.I)
     if re.search(r";\s*path=", cookie, flags=re.I):
@@ -641,6 +685,13 @@ async def gw(request):
                 rewritten = rewrite_cookie(c, request_is_https(request))
                 resp.headers.add("Set-Cookie", rewritten)
             ct = r.headers.get("Content-Type", "")
+            if "manifest" in ct and port_manifest_rewrite(port):
+                raw = await r.read()
+                out = rewrite_manifest_prefix(raw.decode("utf-8", "replace"), port).encode()
+                resp.content_length = len(out)
+                await resp.prepare(request)
+                await resp.write(out)
+                return resp
             if "text/html" in ct:
                 raw = await r.read()
                 s = raw.decode("utf-8", "replace")
