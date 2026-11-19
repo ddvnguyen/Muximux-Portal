@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<title>Portal — offline</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafafa; --fg:#18181b; --muted:#52525b; --card:#fff; --line:#e4e4e7; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#09090b; --fg:#fafafa; --muted:#a1a1aa; --card:#18181b; --line:#27272a; --accent:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100dvh; display:grid; place-items:center; padding:32px 20px;
+         background:var(--bg); color:var(--fg);
+         font:16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { width:min(560px,100%); }
+  .badge { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px;
+           border:1px solid var(--line); background:var(--card); color:var(--muted); font-size:13px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#f59e0b; }
+  h1 { margin:20px 0 8px; font-size:clamp(24px,5vw,32px); letter-spacing:-.02em; }
+  p { margin:0 0 16px; color:var(--muted); }
+  section { margin:24px 0; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--card); }
+  h2 { margin:0 0 10px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  ul { margin:0; padding:0; list-style:none; display:grid; gap:8px; }
+  li { display:flex; justify-content:space-between; gap:12px; font-variant-numeric:tabular-nums; }
+  code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
+  .empty { color:var(--muted); font-size:14px; }
+  button { appearance:none; border:0; border-radius:10px; padding:12px 18px; font:inherit; font-weight:600;
+           background:var(--accent); color:#fff; cursor:pointer; }
+  button:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+</style>
+</head>
+<body>
+<main>
+  <span class="badge"><span class="dot"></span> Offline</span>
+  <h1>The portal shell is running from cache.</h1>
+  <p>This page is served by the portal service worker, so the app frame stays
+     inside the portal instead of showing the browser's network error. Live
+     data needs a connection — reconnect and reload to pick up where you left off.</p>
+  <section aria-labelledby="apps">
+    <h2 id="apps">Apps with cached build files</h2>
+    <ul id="list"><li class="empty">Reading cache…</li></ul>
+  </section>
+  <button id="reload" type="button">Reload the portal</button>
+</main>
+<script>
+  (function () {
+    var list = document.getElementById("list");
+    function render(ports) {
+      if (!ports.length) {
+        list.innerHTML = '<li class="empty">No app build files cached yet.</li>';
+        return;
+      }
+      list.innerHTML = ports.map(function (p) {
+        return "<li><span>App :" + p + "</span><code>app-" + p + "-*</code></li>";
+      }).join("");
+    }
+    try {
+      if (!window.caches || !caches.keys) { render([]); return; }
+      caches.keys().then(function (keys) {
+        var ports = {};
+        keys.forEach(function (k) {
+          var m = /^app-(\d+)-/.exec(k);
+          if (m) ports[m[1]] = true;
+        });
+        render(Object.keys(ports).sort(function (a, b) { return a - b; }));
+      }).catch(function () { render([]); });
+    } catch (e) { render([]); }
+    document.getElementById("reload").addEventListener("click", function () { location.reload(); });
+  })();
+</script>
+</body>
+</html>

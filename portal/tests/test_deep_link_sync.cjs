@@ -14,7 +14,8 @@ function boot({ hash = '', hostname = 'portal.ddvnguyen.com' } = {}) {
   };
   const rootStyle = new Map();
   const fab = { style: {}, querySelector: () => ({ style: {} }) };
-  const handlers = {};
+  const listeners = {};
+  const links = [];
   const storage = new Map();
   const animationFrames = [];
   const mutationCallbacks = [];
@@ -24,12 +25,28 @@ function boot({ hash = '', hostname = 'portal.ddvnguyen.com' } = {}) {
     AbortController, URL, URLSearchParams, Date, Math, setTimeout, clearTimeout, queueMicrotask,
     location,
     history: { state: null, replaceState(_state, _title, url) { lastUrl = url; }, pushState() {} },
-    window: { addEventListener(name, callback) { handlers[name] = callback; } },
+    window: {
+      addEventListener(name, callback) { (listeners[name] = listeners[name] || []).push(callback); },
+    },
     document: {
       documentElement: { style: { setProperty(name, value) { rootStyle.set(name, value); } } },
+      head: { appendChild(node) { links.push(node); } },
+      createElement(tag) {
+        const attrs = {};
+        return {
+          tagName: tag.toUpperCase(),
+          setAttribute(key, value) { attrs[key] = value; },
+          getAttribute(key) { return attrs[key] ?? null; },
+          remove() {},
+        };
+      },
       hidden: false,
       addEventListener() {},
-      querySelector(selector) { return selector === '[role="navigation"].fixed.z-40 > button' ? fab : null; },
+      querySelector(selector) {
+        if (selector === '[role="navigation"].fixed.z-40 > button') return fab;
+        if (selector === 'link[data-portal-manifest]') return links[0] || null;
+        return null;
+      },
       querySelectorAll(selector) { return selector === 'iframe[src]' ? [iframe] : []; },
     },
     requestAnimationFrame(callback) { animationFrames.push(callback); },
@@ -46,7 +63,8 @@ function boot({ hash = '', hostname = 'portal.ddvnguyen.com' } = {}) {
   });
   vm.runInContext(source, context);
   return {
-    handlers, iframe, fab, rootStyle, storage, animationFrames,
+    listeners, iframe, fab, rootStyle, storage, animationFrames,
+    fire(name, event) { for (const callback of listeners[name] || []) callback(event); },
     triggerMutation() { mutationCallbacks[0](); },
     flushAnimationFrame() { animationFrames.shift()?.(); },
     get lastUrl() { return lastUrl; },
@@ -58,13 +76,13 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
 (async () => {
   const app = boot();
   await wait();
-  app.handlers.message({
+  app.fire("message", {
     source: app.iframe.contentWindow,
     origin: 'https://portal.ddvnguyen.com',
     data: { type: 'portal-gateway-path', port: 3701, path: '/moct/login' },
   });
   assert.equal(app.lastUrl, '/#multica/login');
-  app.handlers.message({
+  app.fire("message", {
     source: app.iframe.contentWindow,
     origin: 'https://evil.example',
     data: { type: 'portal-gateway-path', port: 3701, path: '/moct/forged' },
@@ -80,7 +98,7 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(app.rootStyle.get('--portal-fab-size'), '56px');
   app.storage.set('portal.fab.size', 'large');
-  app.handlers.storage({ key: 'portal.fab.size' });
+  app.fire("storage", { key: 'portal.fab.size' });
   assert.equal(app.rootStyle.get('--portal-fab-size'), '68px');
   assert.equal(app.fab.style.width, '68px');
 

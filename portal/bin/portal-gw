@@ -43,6 +43,7 @@ import re
 import sys
 import time
 import urllib.request
+from urllib.parse import quote, urljoin, urlsplit
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -63,8 +64,8 @@ FAVICON_REFRESH_MIN = 300  # min seconds between ?refresh=1 fetches
 _favicon_cache = {}  # port -> {"body", "content_type", "at"}
 
 LISTEN = ("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 3738)
-REGISTRY_URL = "http://127.0.0.1:3726/ports/v1/registry"
-LEASES_URL = "http://127.0.0.1:3726/lease/v1/leases"
+REGISTRY_URL = os.environ.get("PORTAL_GW_REGISTRY_URL") or "http://127.0.0.1:3726/ports/v1/registry"
+LEASES_URL = os.environ.get("PORTAL_GW_LEASES_URL") or "http://127.0.0.1:3726/lease/v1/leases"
 DENY_FILE = os.environ.get("PORTAL_GW_DENY_FILE") or os.path.join(HERE, "ports-deny.yaml")
 REGISTERED_FILE = os.path.join(HERE, "ports.registered.json")
 FALLBACK_PORTS = {3701, 9090}
@@ -407,6 +408,239 @@ def rewrite_cockpit_html_paths(html, port=9090):
                        + f"/p/{port}/cockpit/"),
         html)
 
+# ---------------------------------------------------------------------------
+# M-421: portal PWA — manifest at the portal origin + per-build cache keys
+# ---------------------------------------------------------------------------
+PWA_DIR = os.path.join(HERE, "ui", "pwa")
+MANIFEST_TTL = 300
+_manifest_cache = {}  # port -> {"doc", "at"}
+
+PORTAL_ICONS = [
+    {"src": "/android-chrome-192x192.png", "sizes": "192x192",
+     "type": "image/png", "purpose": "any"},
+    {"src": "/android-chrome-512x512.png", "sizes": "512x512",
+     "type": "image/png", "purpose": "any"},
+    {"src": "/pwa/icon-maskable-512.png", "sizes": "512x512",
+     "type": "image/png", "purpose": "maskable"},
+]
+PORTAL_COLORS = {"theme_color": "#09090b", "background_color": "#09090b"}
+
+
+def port_pwa_cache(port):
+    """Opt-in authenticated-HTML caching for one app (M-421 condition 3).
+
+    Default off: a port's document HTML is only cacheable when it is
+    explicitly declared here. Even then the response must not be a
+    redirect and must not carry Set-Cookie, `no-store` or `private`
+    (see `html_cacheable`). MMX :3190 answers `private, no-cache,
+    no-store` plus four Set-Cookie headers on the live lane, so it stays
+    off — its hashed assets are still cached.
+    """
+    try:
+        return bool(port_profile(port).get("pwa_cache", False))
+    except Exception:
+        return False
+
+
+BUILD_ID_RE = re.compile(r"""(?:src|href)\s*=\s*["']([^"']+)["']""")
+BUILD_URL_RE = re.compile(r"/(?:_next/static|assets)/")
+
+
+def app_build_id(html):
+    """Short, stable build id for one app's HTML (M-421 condition 2).
+
+    Hash only the sorted set of `/_next/static/…` and `/assets/…` URLs in
+    the document, never the body: app HTML carries nonces and RSC payloads
+    that change on every request, and hashing those would invalidate the
+    cache on every reload. Two fetches of the same build must agree.
+    """
+    urls = set()
+    for value in BUILD_ID_RE.findall(html or ""):
+        try:
+            path = urlsplit(urljoin("http://x/", value)).path
+        except Exception:
+            continue
+        if BUILD_URL_RE.search(path):
+            urls.add(path)
+    if not urls:
+        return "nobuild"
+    return hashlib.sha1("\n".join(sorted(urls)).encode()).hexdigest()[:10]
+
+
+def html_cacheable(response, port):
+    """May this HTML response be stored by the service worker? (M-421 §3)
+
+    `X-PWA-Cache` is always sent so the worker can tell "not opted in"
+    from "opted in but this response is not storable".
+    """
+    if not port_pwa_cache(port):
+        return False
+    if response.status != 200:
+        return False
+    if response.headers.getall("Set-Cookie", []):
+        return False
+    cc = (response.headers.get("Cache-Control") or "").lower()
+    if "no-store" in cc or "private" in cc:
+        return False
+    return True
+
+
+def port_label(port):
+    label = port_profile(port).get("label")
+    return str(label) if label else f"Port {port}"
+
+
+def portal_manifest():
+    """Default install: the Muximux portal itself, id `/` (upgrades today's)."""
+    shortcuts = []
+    for key, prof in _load_profiles().items():
+        try:
+            p = int(key)
+        except (TypeError, ValueError):
+            continue
+        if p not in allowed_ports():
+            continue
+        label = str((prof or {}).get("label") or f"Port {p}")
+        shortcuts.append({"name": label, "short_name": label[:12],
+                          "url": f"/?app={p}"})
+    doc = {
+        "id": "/",
+        "name": "Portal",
+        "short_name": "Portal",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "icons": PORTAL_ICONS,
+    }
+    doc.update(PORTAL_COLORS)
+    if shortcuts:
+        doc["shortcuts"] = shortcuts
+    return doc
+
+
+def _icon_sizes(icons):
+    sizes = set()
+    for icon in icons or []:
+        if not isinstance(icon, dict):
+            continue
+        for part in str(icon.get("sizes") or "").split():
+            sizes.add(part.lower())
+    return sizes
+
+
+def _prefixed_icons(icons, port):
+    out = []
+    for icon in icons or []:
+        if not isinstance(icon, dict) or not isinstance(icon.get("src"), str):
+            continue
+        fixed = dict(icon)
+        fixed["src"] = f"/p/{port}{icon['src']}" if icon["src"].startswith("/") else icon["src"]
+        out.append(fixed)
+    return out
+
+
+def _prefixed_shortcuts(shortcuts, port):
+    out = []
+    for sc in shortcuts or []:
+        if not isinstance(sc, dict) or not isinstance(sc.get("url"), str):
+            continue
+        name = sc.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        path = sc["url"].split("?", 1)[0].lstrip("/")
+        url = f"/?app={port}" + (f"&path={quote(path)}" if path else "")
+        out.append({"name": name, "url": url})
+    return out
+
+
+async def fetch_app_manifest(request, port):
+    """GET the app's own manifest (1 s timeout, 5 min cache)."""
+    now = time.time()
+    hit = _manifest_cache.get(port)
+    if hit and now - hit["at"] < MANIFEST_TTL:
+        return hit["doc"]
+    sess = port_session(request.app, port)
+    host = port_upstream_host(port)
+    doc = None
+    for path in ("/manifest.webmanifest", "/manifest.json"):
+        try:
+            async with sess.get(f"http://{host}:{port}{path}",
+                                allow_redirects=True,
+                                timeout=aiohttp.ClientTimeout(total=1)) as r:
+                if r.status != 200:
+                    continue
+                body = await r.read()
+                if len(body) > 64 * 1024:
+                    continue
+                doc = json.loads(body.decode("utf-8", "replace"))
+                break
+        except Exception:
+            continue
+    if isinstance(doc, dict):
+        _manifest_cache[port] = {"doc": doc, "at": now}
+        return doc
+    return None
+
+
+async def app_manifest(request, port):
+    """Per-app variant: `/?app=<port>` boot, the app's own icons if usable."""
+    label = port_label(port)
+    doc = {
+        "id": f"/?app={port}",
+        "name": label,
+        "short_name": label[:12],
+        "start_url": f"/?app={port}",
+        "scope": "/",
+        "display": "standalone",
+        "icons": PORTAL_ICONS,
+    }
+    doc.update(PORTAL_COLORS)
+    upstream = await fetch_app_manifest(request, port)
+    if upstream:
+        icons = _prefixed_icons(upstream.get("icons"), port)
+        sizes = _icon_sizes(icons)
+        # Both a 192 and a 512 are required for a good install on Android
+        # and Chrome desktop; otherwise the portal artwork is the fallback.
+        if "192x192" in sizes and "512x512" in sizes:
+            doc["icons"] = icons
+        shortcuts = _prefixed_shortcuts(upstream.get("shortcuts"), port)
+        if shortcuts:
+            doc["shortcuts"] = shortcuts
+    return doc
+
+
+async def manifest(request):
+    """`/manifest.webmanifest` — portal install (default) or `?app=<port>`."""
+    raw = request.query.get("app")
+    if raw is None:
+        doc = portal_manifest()
+    else:
+        try:
+            port = int(raw)
+        except (TypeError, ValueError):
+            return web.Response(status=404, text="unknown app")
+        if port not in allowed_ports():
+            return web.Response(status=404, text="unknown app")
+        doc = await app_manifest(request, port)
+    body = json.dumps(doc, separators=(",", ":")).encode()
+    return web.Response(body=body, headers={
+        "Content-Type": "application/manifest+json",
+        "Cache-Control": "no-store",
+    })
+
+
+async def pwa_static(request):
+    """`/offline.html` and `/pwa/*` — static files shipped with the portal."""
+    name = request.match_info.get("name") or "offline.html"
+    if "/" in name or "\\" in name or name.startswith("."):
+        return web.Response(status=404, text="not found")
+    path = os.path.join(PWA_DIR, name)
+    if not os.path.isfile(path):
+        return web.Response(status=404, text="not found")
+    cache = "no-cache" if name == "offline.html" else "public, max-age=3600"
+    return web.FileResponse(path, headers={"Cache-Control": cache})
+
+
 def sw_without_lifecycle(mux):
     """Drop Muximux's install/activate handlers from the combined worker.
 
@@ -618,6 +852,10 @@ async def gw(request):
             if "text/html" in ct:
                 raw = await r.read()
                 s = raw.decode("utf-8", "replace")
+                # M-421: computed before the shim is injected, and from the
+                # asset URL set only (never the body — nonces/RSC churn).
+                resp.headers["X-App-Build"] = app_build_id(s)
+                resp.headers["X-PWA-Cache"] = "1" if html_cacheable(r, port) else "0"
                 if port == 9090 or "shell-page" in s or "/cockpit/@localhost" in s:
                     # 9090: login page (base "/") + post-login shell (base
                     # /cockpit/@localhost/...). Content gate extends the same
@@ -755,6 +993,9 @@ async def favicon(request):
 app.router.add_route("*", "/pgw-ping", ping)
 app.router.add_get("/pgw-sw.js", sw)
 app.router.add_get("/sw.js", sw)
+app.router.add_get("/manifest.webmanifest", manifest)
+app.router.add_get("/offline.html", pwa_static)
+app.router.add_get("/pwa/{name}", pwa_static)
 app.router.add_route("*", "/p/{port:\\d+}",
                      lambda r: web.HTTPFound(f"/p/{r.match_info['port']}/"))
 app.router.add_route("GET", "/p/{port:\\d+}/__favicon", favicon)
