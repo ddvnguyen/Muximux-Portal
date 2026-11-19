@@ -8,7 +8,10 @@ const ext = fs.readFileSync(path.join(__dirname, '../ui/ports/ext.js'), 'utf8');
 const prelude = 'let TAILNET_HOST = "https://tailnet-host.example.ts.net";\n'
   + 'let tailnetOk = null, tailnetAt = 0, tailnetProbe = null;\n'
   + 'const PROBE_TTL_MS = 60000;\n';
-const body = ext.slice(ext.indexOf('async function loadTailnetHost'));
+// Stop at the M-421 PWA block: this test only needs the tailnet chooser, and
+// that block bootstraps the portal shell on load.
+const pwaAt = ext.indexOf('/* -- M-421:');
+const body = ext.slice(ext.indexOf('async function loadTailnetHost'), pwaAt === -1 ? undefined : pwaAt);
 const chooser = prelude + body.replace(/^let TAILNET_HOST.*\n/m, '').replace(/^const PROBE_TTL_MS.*\n/m, '').replace(/^let tailnetOk.*\n/m, '').replace(/^let tailnetProbe.*\n/m, '');
 const attrs = { src: '/p/3701/moct/', allow: "camera 'none'" };
 const frame = {

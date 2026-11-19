@@ -83,3 +83,22 @@ profiles:
     tailnet_url: ""
     spa: true
     origin: rewrite
+  3190:
+    label: MMX PWA
+    scheme: http
+    host: 127.0.0.1
+    path: /
+    open: auto
+    newtab: false
+    pinned: false
+    tailnet_url: ""
+    spa: true
+    origin: rewrite
+    # M-421: document HTML stays out of the cache. Measured on the live lane
+    # 2026-11-19: GET /p/3190/ -> 200 with
+    #   Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate
+    #   Set-Cookie: multica_auth, multica_csrf, multica_csrf_session, multica_logged_in
+    # so `html_cacheable()` would refuse it anyway; leave the opt-in off and
+    # cache only the hashed /_next/static build output. Flip to true only for
+    # an app whose HTML is public and cacheable.
+    pwa_cache: false

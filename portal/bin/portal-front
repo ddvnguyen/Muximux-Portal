@@ -192,7 +192,10 @@ class Handler(BaseHTTPRequestHandler):
                 or self.path.startswith("/lease")):
             self._proxy_to(API_HOST, API_PORT, inject=False)
         elif (self.path.startswith("/p/") or self.path == "/sw.js"
-                or self.path == "/pgw-sw.js" or self.path == "/pgw-ping"):
+                or self.path == "/pgw-sw.js" or self.path == "/pgw-ping"
+                or self.path.split("?", 1)[0] == "/manifest.webmanifest"
+                or self.path.split("?", 1)[0] == "/offline.html"
+                or self.path.startswith("/pwa/")):
             # M-323: port gateway lives behind Caddy :3720, but tests and
             # direct-:3736 traffic must reach it too — same origin either way.
             self._proxy_to(GW_HOST, GW_PORT, inject=False)

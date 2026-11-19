@@ -409,3 +409,174 @@ document.addEventListener("visibilitychange", () => {
 });
 // early probe so iframes created on load are rewritten on arrival
 probeTailnet().then(rewritePortIframes);
+
+/* -- M-421: portal PWA ------------------------------------------------------
+ * 1. Own <link rel="manifest">. Muximux injects one at boot and its theme code
+ *    rewrites that link's href to a blob manifest with no start_url/scope
+ *    (web/src/lib/favicon.ts:104). We keep our own link and re-assert it from
+ *    a head observer, so the install always describes the portal.
+ * 2. `?app=<port>` (a per-app launcher entry) wins over the last app used;
+ *    otherwise restore localStorage["portal.app.last"].
+ * 3. Relay `{type:"portal:badge"}` from the *active* app frame to
+ *    navigator.setAppBadge — the app posts to window.parent (M-421 §5).
+ * 4. Drop any service worker registered under /p/<port>/ (a narrow scope
+ *    would win inside that frame). A worker cannot enumerate registrations,
+ *    so this cleanup has to run in the page.
+ * ------------------------------------------------------------------------- */
+const MANIFEST_URL = "/manifest.webmanifest";
+const LAST_APP_KEY = "portal.app.last";
+let portalApps = null;
+let currentPort = null;
+let userNavigated = false;
+
+/* Source of truth: web/src/lib/slug.ts (must match Go config.Slugify). */
+function portalSlugify(name) {
+  const out = [];
+  let lastDash = true;
+  for (const ch of String(name || "")) {
+    if (ch >= "A" && ch <= "Z") { out.push(ch.toLowerCase()); lastDash = false; }
+    else if ((ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9")) { out.push(ch); lastDash = false; }
+    else if (ch === " " || ch === "-" || ch === "_") {
+      if (!lastDash) { out.push("-"); lastDash = true; }
+    }
+  }
+  let slug = out.join("");
+  return slug.endsWith("-") ? slug.slice(0, -1) : slug;
+}
+
+async function loadPortalApps() {
+  if (portalApps) return portalApps;
+  try {
+    const res = await fetch("/api/config", { cache: "no-store", credentials: "same-origin" });
+    if (res.ok) {
+      const cfg = await res.json();
+      portalApps = (cfg.apps || []).filter((a) => a && typeof a.url === "string" && a.enabled !== false);
+    }
+  } catch { /* offline or unauthenticated: boot falls back to nothing */ }
+  return portalApps || [];
+}
+
+function portOfUrl(value) {
+  try {
+    const m = /^\/p\/(\d+)(?:\/|$)/.exec(new URL(value, location.href).pathname);
+    return m ? Number(m[1]) : null;
+  } catch { return null; }
+}
+
+function appForPort(port) {
+  return (portalApps || []).find((a) => portOfUrl(a.url) === port) || null;
+}
+
+function appForSlug(slug) {
+  return (portalApps || []).find((a) => portalSlugify(a.name) === slug) || null;
+}
+
+function currentSlug() {
+  const raw = location.hash.replace(/^#/, "");
+  return raw.split("/")[0].split("?")[0];
+}
+
+function manifestHref(port) {
+  return port ? `${MANIFEST_URL}?app=${port}` : MANIFEST_URL;
+}
+
+function ensureManifestLink(href) {
+  let link = document.querySelector('link[data-portal-manifest]');
+  if (!link) {
+    link = document.createElement("link");
+    link.setAttribute("rel", "manifest");
+    link.setAttribute("data-portal-manifest", "1");
+    (document.head || document.documentElement).appendChild(link);
+  }
+  const want = href || manifestHref(currentPort);
+  if (link.getAttribute("href") !== want) link.setAttribute("href", want);
+  return link;
+}
+
+function syncManifest() {
+  const app = appForSlug(currentSlug());
+  currentPort = app ? portOfUrl(app.url) : null;
+  ensureManifestLink(manifestHref(currentPort));
+  if (currentPort) {
+    try { localStorage.setItem(LAST_APP_KEY, String(currentPort)); } catch { /* private mode */ }
+  }
+}
+
+function watchManifest() {
+  const head = document.head || document.documentElement;
+  new MutationObserver(() => ensureManifestLink(manifestHref(currentPort)))
+    .observe(head, { childList: true, attributes: true, attributeFilter: ["href"], subtree: true });
+  ensureManifestLink(manifestHref(currentPort));
+}
+
+async function bootPortalApp() {
+  const apps = await loadPortalApps();
+  if (!apps.length) return;
+  const wanted = Number(new URLSearchParams(location.search).get("app"));
+  let port = Number.isInteger(wanted) && wanted > 0 ? wanted : null;
+  if (port == null) {
+    try { port = Number(localStorage.getItem(LAST_APP_KEY)) || null; } catch { port = null; }
+  }
+  if (port == null) return;
+  const app = appForPort(port);
+  const slug = app ? portalSlugify(app.name) : "";
+  if (!slug) return;
+  let overridden = false;
+  const apply = () => {
+    if (currentSlug() === slug) return true;
+    // Muximux may select its default app (and write that hash) after we boot.
+    // Override that once; never fight a hash the user chose afterwards.
+    if (overridden || userNavigated) return false;
+    overridden = true;
+    location.hash = `#${slug}`;
+    return false;
+  };
+  if (apply()) return;
+  for (const delay of [150, 400, 900, 1600, 2600]) {
+    setTimeout(() => { if (apply()) syncManifest(); }, delay);
+  }
+}
+
+function activeAppFrame() {
+  if (currentPort == null) return null;
+  for (const frame of document.querySelectorAll("iframe[src]")) {
+    if (portOfUrl(frame.getAttribute("src")) === currentPort) return frame;
+  }
+  return null;
+}
+
+function relayBadge(event) {
+  const data = event.data;
+  if (!data || data.type !== "portal:badge") return;
+  // Same-origin only: the app frame is /p/<port>/ on the portal origin.
+  if (event.origin !== location.origin) return;
+  const frame = activeAppFrame();
+  if (!frame || event.source !== frame.contentWindow) return;
+  const count = Number(data.count);
+  try {
+    if (!Number.isFinite(count) || count <= 0) navigator.clearAppBadge?.();
+    else navigator.setAppBadge?.(Math.floor(count));
+  } catch { /* Badging API unavailable */ }
+}
+
+async function dropNarrowWorkers() {
+  try {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistrations) return;
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const reg of regs) {
+      let path = "";
+      try { path = new URL(reg.scope).pathname; } catch { path = ""; }
+      if (path.startsWith("/p/")) await reg.unregister();
+    }
+  } catch { /* no SW support */ }
+}
+
+window.addEventListener("message", relayBadge);
+window.addEventListener("hashchange", syncManifest);
+window.addEventListener("pointerdown", () => { userNavigated = true; }, { capture: true, once: true });
+window.addEventListener("keydown", () => { userNavigated = true; }, { capture: true, once: true });
+watchManifest();
+loadPortalApps().then(syncManifest);
+bootPortalApp();
+if (document.readyState === "complete") dropNarrowWorkers();
+else window.addEventListener("load", dropNarrowWorkers, { once: true });
