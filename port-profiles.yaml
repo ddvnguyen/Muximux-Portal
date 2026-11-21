@@ -50,21 +50,6 @@ profiles:
     origin: rewrite
     source: loopback  # M-379: dsh-claude trustedRequest needs a loopback peer (dsh-z binds 10.88.0.1)
     loopback_map: [18791]  # M-372: billion-context __BILI__.origin (http://127.0.0.1:18791)
-  3190:
-    label: MMX PWA
-    scheme: http
-    host: 127.0.0.1
-    path: /
-    open: auto
-    newtab: false
-    pinned: false
-    tailnet_url: ""
-    spa: true
-    origin: rewrite
-    # M-404: prefix the PWA manifest (start_url/scope/icons/shortcuts) to
-    # /p/3190/ so an install from the portal tab launches inside the
-    # gateway. App asset paths stay root-relative — the SW maps them.
-    manifest_rewrite: true
   4096:
     label: opencode
     scheme: http

@@ -10,7 +10,9 @@
     "freebuff.web",
     "paperclip.web"
   ],
-  "registered_apps": ["freebuff.proxy[a44d008f3]"],
+  "registered_apps": [
+    "freebuff.proxy[a44d008f3]"
+  ],
   "claims": [
     {
       "port": 3701,

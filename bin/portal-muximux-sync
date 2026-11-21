@@ -112,15 +112,13 @@ def desired(mode):
         if mode == "proxy" and ((key or name) in gateway or (registered and key in registered_gateway)):
             # local port through the portal gateway (service-worker rewrite), never the public hostname
             a = {"name": name, "url": f"/p/{port}/", "group": group, "enabled": True, "open_mode": "iframe", "proxy": False,
-                 "icon": app_icon(port)}  # M-357: the app's own favicon as the tab icon
-            if port in claimed_ports:
-                a["allow_deep_links"] = True
+                 "icon": app_icon(port), "allow_deep_links": True}
         elif mode == "proxy" and (key or name) in public:
             # has its own Cloudflare hostname: open natively (websocket-heavy apps break under /proxy/<slug>/)
             a = {"name": name, "url": public[key or name], "group": group, "enabled": True, "open_mode": "new_tab", "proxy": False}
         elif mode == "proxy":
             a = {"name": name, "url": f"{scheme}://{host}:{port}", "group": group, "enabled": True,
-                 "open_mode": "iframe", "proxy": True, "proxy_skip_tls_verify": True}
+                 "open_mode": "iframe", "proxy": True, "proxy_skip_tls_verify": True, "allow_deep_links": True}
         else:
             a = {"name": name, "url": f"https://{TS_HOST}:{port}", "group": group, "enabled": True,
                  "open_mode": "new_tab", "proxy": False}

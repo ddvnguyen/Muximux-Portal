@@ -45,6 +45,112 @@ async function restoreClaimedNavigation() {
 }
 restoreClaimedNavigation();
 
+function toSlug(name) {
+  let t = [], n = true;
+  for (let r of String(name || "")) {
+    if (r >= "A" && r <= "Z") { t.push(r.toLowerCase()); n = false; }
+    else if ((r >= "a" && r <= "z") || (r >= "0" && r <= "9")) { t.push(r); n = false; }
+    else if (r === " " || r === "-" || r === "_") { if (!n) { t.push("-"); n = true; } }
+  }
+  let r = t.join("");
+  return r.endsWith("-") ? r.slice(0, -1) : r;
+}
+
+function restoreInAppPath() {
+  const raw = location.hash.slice(1);
+  if (!raw) return;
+  const slash = raw.indexOf("/");
+  if (slash < 1) return;
+  const slug = raw.slice(0, slash);
+  const requested = raw.slice(slash + 1);
+  loadClaims().then((claims) => {
+    const claim = claims.find((item) => item.app === slug &&
+      Array.isArray(item.hosts) && item.hosts.includes(location.hostname));
+    const path = claim
+      ? `${(claim.prefix || "").replace(/\/$/, "")}/${requested}`
+      : requested;
+    history.replaceState(history.state, "", `${location.pathname}${location.search}#${slug}?path=${encodeURIComponent(path.replace(/^\//, ""))}`);
+  }).catch(() => {});
+}
+restoreInAppPath();
+
+async function watchInAppPaths() {
+  const claims = await loadClaims();
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "portal-gateway-path" || typeof data.path !== "string" || !data.path.startsWith("/")) return;
+    const frame = [...document.querySelectorAll("iframe[src]")].find((item) => item.contentWindow === event.source);
+    if (!frame) return;
+    let frameUrl;
+    try { frameUrl = new URL(frame.src, location.href); } catch { return; }
+    if (event.origin !== frameUrl.origin) return;
+
+    const match = frameUrl.pathname.match(/^\/p\/(\d+)(?:\/|$)/);
+    const framePort = match ? Number(match[1]) : null;
+    if (framePort !== null && framePort !== data.port) return;
+
+    const claim = claims.find((item) => item.port === data.port &&
+      Array.isArray(item.hosts) && item.hosts.includes(frameUrl.hostname) &&
+      item.hosts.includes(location.hostname));
+
+    let slug, prefix = "";
+    if (claim) {
+      slug = claim.app;
+      prefix = (claim.prefix || "").replace(/\/$/, "");
+    } else {
+      const appName = frame.getAttribute("data-app") || frame.getAttribute("title");
+      slug = appName ? toSlug(appName) : null;
+    }
+    if (!slug) return;
+
+    let appPath;
+    if (prefix) {
+      if (data.path !== prefix && !data.path.startsWith(`${prefix}/`)) return;
+      appPath = data.path.slice(prefix.length) || "/";
+    } else {
+      appPath = data.path;
+    }
+
+    const route = appPath === "/" && !data.path.includes("?") && !data.path.includes("#")
+      ? `#${slug}`
+      : `#${slug}${appPath.startsWith("/") ? appPath : "/" + appPath}`;
+    history.replaceState(history.state, "", `${location.pathname}${location.search}${route}`);
+  });
+}
+watchInAppPaths();
+
+const FAB_SIZE_KEY = "portal.fab.size";
+const FAB_SCALES = { small: 0.8, medium: 1, large: 1.25 };
+function applyFabSize(value) {
+  const scale = FAB_SCALES[value] || FAB_SCALES.medium;
+  document.documentElement.style.setProperty("--portal-fab-scale", `${scale}`);
+  document.documentElement.setAttribute("data-portal-fab-size", value in FAB_SCALES ? value : "medium");
+  const fab = document.querySelector('[role="navigation"].fixed.z-40');
+  if (fab) {
+    // Scale the FAB container around its bottom-right corner: no override
+    // of Muximux's own width/height/padding, so light/dark themes keep
+    // their shape and the button stays draggable.
+    fab.style.transform = `scale(${scale})`;
+    fab.style.transformOrigin = "bottom right";
+  }
+}
+function syncFabSize() {
+  let value = "medium";
+  try { value = localStorage.getItem(FAB_SIZE_KEY) || "medium"; } catch { /* private mode */ }
+  applyFabSize(value);
+}
+syncFabSize();
+window.addEventListener("storage", (event) => { if (event.key === FAB_SIZE_KEY) syncFabSize(); });
+let fabSyncScheduled = false;
+new MutationObserver(() => {
+  if (fabSyncScheduled) return;
+  fabSyncScheduled = true;
+  requestAnimationFrame(() => {
+    fabSyncScheduled = false;
+    syncFabSize();
+  });
+}).observe(document.documentElement, { childList: true, subtree: true });
+
 let sid = null;
 try { sid = sessionStorage.getItem("portal.ext.session"); } catch { sid = null; }
 if (!sid) {
@@ -120,6 +226,36 @@ function hideEmptyState(modal) {
   }
 }
 
+function fabSizeRow() {
+  const li = document.createElement("li");
+  li.setAttribute("data-portal-ext", "1");
+  li.style.cssText = "max-width:100%;overflow:hidden;";
+  const btn = document.createElement("button");
+  btn.className = "command-palette-item w-full px-4 min-h-[52px] flex items-center space-x-3 text-start py-3";
+  btn.setAttribute("type", "button");
+  btn.dataset.selected = "false";
+  btn.onmouseenter = () => {
+    palette()?.dlg.querySelectorAll(".command-palette-item").forEach((b) => { b.dataset.selected = "false"; });
+    btn.dataset.selected = "true";
+  };
+  let current = "medium";
+  try { current = localStorage.getItem(FAB_SIZE_KEY) || "medium"; } catch { /* private mode */ }
+  const next = current === "small" ? "medium" : current === "medium" ? "large" : "small";
+  btn.innerHTML =
+    '<div style="flex:none;width:32px;height:32px;border-radius:8px;background:#1f2937;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;">&#9679;</div>' +
+    '<div style="flex:1;min-width:0;text-align:left;"><div style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>' +
+    '<div style="font-size:13px;opacity:.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div></div>';
+  btn.children[1].children[0].textContent = `Floating button size: ${current} (switch to ${next})`;
+  btn.children[1].children[1].textContent = "S / M / L, saved in this browser, applied live";
+  btn.addEventListener("click", () => {
+    try { localStorage.setItem(FAB_SIZE_KEY, next); } catch { /* private mode */ }
+    applyFabSize(next);
+    palette()?.dlg.remove();
+  });
+  li.append(btn);
+  return li;
+}
+
 function manageRow() {
   const li = document.createElement("li");
   li.setAttribute("data-portal-ext", "1");
@@ -182,8 +318,10 @@ async function refresh(force) {
         }
       }
     }
-    if (!rows.length) return;
+    const fabQ = (q || "").trim().toLowerCase();
+    if (!rows.length && !fabQ.includes("float") && !fabQ.includes("button") && !fabQ.includes("fab") && !fabQ.includes("size")) return;
     hideEmptyState(p.modal);
+    rows.push(fabSizeRow());
     rows.push(manageRow());
     let list = p.list;
     if (!list || !p.modal.contains(list)) {

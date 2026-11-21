@@ -228,13 +228,3 @@ static:
     unit: paperclip.service
     health: http://127.0.0.1:45000/
     portal: {title: Paperclip, tab: true}
-
-  - id: mmx-z.pwa          # M-390: MMX PWA second web (mmx-pwa-z.service)
-    app: mmx
-    lane: z
-    role: pwa
-    port: 3190
-    bind: 127.0.0.1
-    unit: mmx-pwa-z.service
-    health: http://127.0.0.1:3190/manifest.webmanifest
-    portal: {title: MMX PWA, tab: true}
