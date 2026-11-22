@@ -64,12 +64,20 @@ function restoreInAppPath() {
   const slug = raw.slice(0, slash);
   const requested = raw.slice(slash + 1);
   loadClaims().then((claims) => {
+    // M-502: tolerate bookmarks saved by the doubled-prefix bug (#cockpit/p/9090/podman).
+    const clean = requested.replace(/^p\/\d+\//, "").replace(/^\/p\/\d+\//, "/").replace(/^\//, "");
     const claim = claims.find((item) => item.app === slug &&
       Array.isArray(item.hosts) && item.hosts.includes(location.hostname));
-    const path = claim
-      ? `${(claim.prefix || "").replace(/\/$/, "")}/${requested}`
-      : requested;
-    history.replaceState(history.state, "", `${location.pathname}${location.search}#${slug}?path=${encodeURIComponent(path.replace(/^\//, ""))}`);
+    const pre = claim ? (claim.prefix || "").replace(/\/$/, "") : "";
+    let c = clean;
+    if (claim && pre) {
+      const ps = pre.replace(/^\//, "");
+      if (c === ps) c = "";
+      else if (ps && c.startsWith(`${ps}/`)) c = c.slice(ps.length + 1);
+    }
+    const path = claim ? `${pre}/${c}` : c;
+    const suffix = c ? `?path=${encodeURIComponent(path.replace(/^\//, ""))}` : "";
+    history.replaceState(history.state, "", `${location.pathname}${location.search}#${slug}${suffix}`);
   }).catch(() => {});
 }
 restoreInAppPath();
@@ -103,12 +111,16 @@ async function watchInAppPaths() {
     }
     if (!slug) return;
 
+    // M-502: the shim posts location.pathname, which inside the gateway starts
+    // with /p/<port>. Strip it (claimed apps first strip to their prefix,
+    // then to the claim) so the hash never becomes #cockpit/p/9090/podman.
+    let inApp = data.path.replace(new RegExp(`^/p/${data.port}(?=/|$)`), "") || "/";
     let appPath;
     if (prefix) {
-      if (data.path !== prefix && !data.path.startsWith(`${prefix}/`)) return;
-      appPath = data.path.slice(prefix.length) || "/";
+      if (inApp !== prefix && !inApp.startsWith(`${prefix}/`)) return;
+      appPath = inApp.slice(prefix.length) || "/";
     } else {
-      appPath = data.path;
+      appPath = inApp;
     }
 
     const route = appPath === "/" && !data.path.includes("?") && !data.path.includes("#")

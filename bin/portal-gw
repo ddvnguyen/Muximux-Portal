@@ -300,6 +300,10 @@ function fw(u){try{var a=new URL(u,location.href);var m=isLoop(a)?mapLoop(a):nul
 if(m!==null&&m!==undefined){var p=a.protocol||'';if(p.indexOf('ws')===0){var s=p==='wss:'||location.protocol==='https:'?'wss://':'ws://';return s+location.host+m}return m}
 return f(u)}catch(e){return u}}
 var _fetch=window.fetch;window.fetch=function(u,o){if(typeof u==='string'||u instanceof URL){try{u=fw(u.toString())}catch(e){}}else if(u&&u.url){try{var n=fw(u.url);if(n!==u.url)u=new Request(n,u)}catch(e){}}return _fetch.call(this,u,o)};
+/* Keep claimed deep links in the portal address bar. The parent validates
+   both this frame's origin and its configured port before accepting updates. */
+function notifyPortalPath(){try{if(window.parent!==window)window.parent.postMessage({type:'portal-gateway-path',port:%d,path:location.pathname+location.search+location.hash},'*')}catch(e){}}
+try{var _ps=history.pushState.bind(history),_rs=history.replaceState.bind(history);history.pushState=function(){var r=_ps.apply(this,arguments);setTimeout(notifyPortalPath,0);return r};history.replaceState=function(){var r=_rs.apply(this,arguments);setTimeout(notifyPortalPath,0);return r};window.addEventListener('popstate',notifyPortalPath);window.addEventListener('hashchange',notifyPortalPath);setTimeout(notifyPortalPath,0)}catch(e){}
 var _XO=window.XMLHttpRequest.prototype.open;window.XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=fw(u)}catch(e){}return _XO.apply(this,arguments)};
 if(HOOKS){try{
 /* M-375: keep_path apps (Paperclip) serve document HTML under /p/<port>/ but
@@ -313,7 +317,7 @@ var _obs=new MutationObserver(function(muts){try{for(var k=0;k<muts.length;k++){
 try{var _ce=document.createElement.bind(document);document.createElement=function(t,a){var el=_ce(t,a);if(el&&el.tagName==='LINK'){try{var _sh=Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype,'href').set;Object.defineProperty(el,'href',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_sh.call(this,v);},get:function(){return this.getAttribute('href');}});}catch(e){}}else if(el&&el.tagName==='SCRIPT'){try{var _ss=Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype,'src').set;Object.defineProperty(el,'src',{configurable:true,set:function(v){try{if(typeof v==='string'&&v.charAt(0)==='/'&&v.indexOf(P+'/')!==0)v=P+v;}catch(e){}_ss.call(this,v);},get:function(){return this.getAttribute('src');}});}catch(e){}}return el;};}catch(e){}
 }catch(e){}}
 window.WebSocket=function(u,p){u=fw(u);return p===undefined?new W(u):new W(u,p)};window.WebSocket.prototype=W.prototype;
-window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_prefix_hooks(port) else 0, 0 if port_keep_path(port) else 1))
+window.WebSocket.CONNECTING=0;window.WebSocket.OPEN=1;window.WebSocket.CLOSING=2;window.WebSocket.CLOSED=3;""" % (port, json.dumps(targets), 1 if port_prefix_hooks(port) else 0, 0 if port_keep_path(port) else 1, port))
     tail = """var sw=navigator.serviceWorker;
 function ping(){return new Promise(function(res){if(!sw||!sw.controller)return res(false);var c=new MessageChannel(),t=setTimeout(function(){res(false)},400);c.port1.onmessage=function(){clearTimeout(t);res(true)};try{sw.controller.postMessage({pgw:'ping'},[c.port2])}catch(e){res(false)}})}
 var ok=false;try{ok=localStorage.getItem('__pgw_ok')==='1'}catch(e){}

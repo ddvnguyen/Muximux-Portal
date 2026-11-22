@@ -89,6 +89,20 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
   await wait();
   assert.equal(rPaperclip.lastUrl, '/#paperclip?path=wizard');
 
+  // (b2) M-502: tolerates bookmarks saved by the doubled-prefix bug.
+  const rDoubled = boot({ hash: '#cockpit/p/9090/podman' });
+  await wait();
+  assert.equal(rDoubled.lastUrl, '/#cockpit?path=podman');
+
+  const rSlashDoubled = boot({ hash: '#grafana/p/3000/dashboards?orgId=1' });
+  await wait();
+  assert.equal(rSlashDoubled.lastUrl, '/#grafana?path=dashboards%3ForgId%3D1');
+
+  // (b3) M-502: claimed app bookmark with legacy gateway+claim prefixes.
+  const rClaimDoubled = boot({ hash: '#multica/p/3701/moct/login' });
+  await wait();
+  assert.equal(rClaimDoubled.lastUrl, '/#multica?path=moct%2Flogin');
+
   // (c) App without path or non-app route (no slash) should not be modified
   const rNoPath = boot({ hash: '#cockpit' });
   await wait();
@@ -162,13 +176,35 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
   });
   assert.equal(app.lastUrl, '/#grafana/dashboards');
 
-  // (d) Origin security
+  // (c2) M-502: shim posts gateway-prefixed pathnames; the stored hash
+  // must not double the prefix.
+  app.handlers.message({
+    source: cockpitFrame.contentWindow,
+    origin: 'https://portal.ddvnguyen.com',
+    data: { type: 'portal-gateway-path', port: 9090, path: '/p/9090/podman' },
+  });
+  assert.equal(app.lastUrl, '/#cockpit/podman');
+
+  app.handlers.message({
+    source: grafanaFrame.contentWindow,
+    origin: 'https://portal.ddvnguyen.com',
+    data: { type: 'portal-gateway-path', port: 3000, path: '/p/3000/d/abc?orgId=1' },
+  });
+  assert.equal(app.lastUrl, '/#grafana/d/abc?orgId=1');
+
+  app.handlers.message({
+    source: multicaFrame.contentWindow,
+    origin: 'https://portal.ddvnguyen.com',
+    data: { type: 'portal-gateway-path', port: 3701, path: '/p/3701/moct/login' },
+  });
+  assert.equal(app.lastUrl, '/#multica/login');
+
   app.handlers.message({
     source: grafanaFrame.contentWindow,
     origin: 'https://evil.example',
     data: { type: 'portal-gateway-path', port: 3000, path: '/forged' },
   });
-  assert.equal(app.lastUrl, '/#grafana/dashboards', 'untrusted origin ignored');
+  assert.equal(app.lastUrl, '/#multica/login', 'untrusted origin ignored');
 
   // (e) Port mismatch security
   app.handlers.message({
@@ -176,7 +212,7 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
     origin: 'https://portal.ddvnguyen.com',
     data: { type: 'portal-gateway-path', port: 9999, path: '/mismatch' },
   });
-  assert.equal(app.lastUrl, '/#grafana/dashboards', 'port mismatch ignored');
+  assert.equal(app.lastUrl, '/#multica/login', 'port mismatch ignored');
 
   console.log('All tests passed: app URL paths for all apps + security verified');
 })().catch((err) => {
