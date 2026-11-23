@@ -1,11 +1,13 @@
 """Exercise WebSocket routing through a real portal-front handler."""
 import importlib.machinery
 import importlib.util
+import os
 import socket
 import threading
 import unittest
 import urllib.request
 import urllib.error
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -152,10 +154,12 @@ class FrontWebsocketRouting(unittest.TestCase):
         # M-540: iframe reload sends no Referer (gateway: no-referrer) and
         # Sec-Fetch-Mode: navigate is excluded from the Referer rule.
         seen = []
+        statuses = {}
         class Gateway(BaseHTTPRequestHandler):
             def do_GET(self):
                 seen.append(self.path)
-                self.send_response(200)
+                status = statuses.get(self.path, 200)
+                self.send_response(status)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             def log_message(self, *args):
@@ -184,25 +188,69 @@ class FrontWebsocketRouting(unittest.TestCase):
                     client.settimeout(3)
                     head = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
                     client.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\n{head}Connection: close\r\n\r\n").encode())
-                    return client.recv(65536)
+                    data = b""
+                    while True:
+                        try:
+                            chunk = client.recv(65536)
+                        except socket.timeout:
+                            break
+                        if not chunk:
+                            break
+                        data += chunk
+                        # Headers complete and body (if any) fully read.
+                        if b"\r\n\r\n" in data:
+                            hdr, _, rest = data.partition(b"\r\n\r\n")
+                            m = re.search(rb"(?im)^content-length:\s*(\d+)", hdr)
+                            if m is None or len(rest) >= int(m.group(1)):
+                                break
+                    return data
             nav = {"Sec-Fetch-Dest": "iframe", "Sec-Fetch-Mode": "navigate"}
+            # routed() dedupes the probe+fetch pair the front sends per
+            # hint-routed navigation (probe first, fetch on success).
+            def routed():
+                out = []
+                for p in seen:
+                    if not out or out[-1] != p:
+                        out.append(p)
+                return out
             # No hint anywhere: Muximux SPA (falls through to the shell).
             self.assertIn(b"200 OK", get("/podman", nav))
             self.assertEqual(seen, [])
             # Cookie hint from the last gateway document: routed to /p/<port>/.
             cookie = dict(nav, Cookie="pgw-port=9090")
             self.assertIn(b"200 OK", get("/podman", cookie))
-            self.assertEqual(seen, ["/p/9090/podman"])
+            self.assertEqual(routed(), ["/p/9090/podman"])
             self.assertIn(b"200 OK", get("/cockpit/login", cookie))
-            self.assertEqual(seen, ["/p/9090/podman", "/p/9090/cockpit/login"])
-            # Bogus cookie: treated as no hint, Muximux SPA again.
-            self.assertIn(b"200 OK", get("/podman", dict(nav, Cookie="pgw-port=abc")))
-            self.assertEqual(seen, ["/p/9090/podman", "/p/9090/cockpit/login"])
+            self.assertEqual(routed(), ["/p/9090/podman", "/p/9090/cockpit/login"])
+            # Bogus / out-of-range cookie: treated as no hint, Muximux again.
+            for bad in ("pgw-port=abc", "pgw-port=0", "pgw-port=99999"):
+                self.assertIn(b"200 OK", get("/podman", dict(nav, Cookie=bad)))
+            self.assertEqual(routed(), ["/p/9090/podman", "/p/9090/cockpit/login"])
+            # Document navigations never use the hint: GET / reaches Muximux.
+            doc = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+                   "Cookie": "pgw-port=9090"}
+            self.assertIn(b"200 OK", get("/", doc))
+            self.assertEqual(routed(), ["/p/9090/podman", "/p/9090/cockpit/login"])
+            # Muximux routes are excluded even for iframe dests with a hint.
+            # /sw.js and /pgw-ping are gateway-owned (Muximux has no such
+            # route in this harness); the rest must reach Muximux, not /p/.
+            for path in ("/", "/api/apps", "/api/config", "/proxy/x/",
+                         "/icons/a.svg", "/ws", "/portal-ext/ext.js",
+                         "/lease"):
+                self.assertIn(b"200 OK", get(path, cookie))
+            self.assertEqual(routed(), ["/p/9090/podman", "/p/9090/cockpit/login"])
             # Subresources never consult the cookie (Referer rule is theirs).
             sub = {"Sec-Fetch-Dest": "script", "Sec-Fetch-Mode": "no-cors",
                    "Cookie": "pgw-port=9090"}
             self.assertIn(b"200 OK", get("/assets/app.js", sub))
-            self.assertEqual(seen, ["/p/9090/podman", "/p/9090/cockpit/login"])
+            self.assertEqual(routed(), ["/p/9090/podman", "/p/9090/cockpit/login"])
+            # Gateway 403/404 on a hint-routed nav falls back to Muximux.
+            statuses["/p/9090/stale"] = 403
+            statuses["/p/9090/gone"] = 404
+            for path in ("/stale", "/gone"):
+                body = get(path, cookie)
+                self.assertIn(b"200 OK", body)
+                self.assertIn(b"<html><body>x", body)
         finally:
             server.shutdown()
             server.server_close()
@@ -211,40 +259,64 @@ class FrontWebsocketRouting(unittest.TestCase):
             mux.shutdown()
             mux.server_close()
 
-    def test_mux_response_opens_framing_to_portal_host(self):
-        # M-540 defence in depth: a mis-route renders the SPA, never the
-        # blank Zen "will not allow ... embedded" error on the tailnet host.
-        class Mux(BaseHTTPRequestHandler):
-            def do_GET(self):
-                raw = b"<html><body>x</body></html>"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html")
-                self.send_header("X-Frame-Options", "SAMEORIGIN")
-                self.send_header("Content-Security-Policy",
-                                 "default-src 'self'; frame-ancestors 'self'")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-            def log_message(self, *args):
-                pass
-        mux = ThreadingHTTPServer(("127.0.0.1", 0), Mux)
-        front.MUX_PORT = mux.server_address[1]
-        server = ThreadingHTTPServer(("127.0.0.1", 0), front.Handler)
-        for srv in (mux, server):
-            threading.Thread(target=srv.serve_forever, daemon=True).start()
+    def test_mux_response_opens_framing_on_tailnet_host_only(self):
+        # M-540 defence in depth, tailnet-scoped: a mis-route on the
+        # tailnet host renders the SPA, never the blank Zen "will not
+        # allow ... embedded" error. The public host keeps strict framing.
+        # Hosts come from gateway-apps.json claims (same file the front
+        # reads live), so the test stages a temp claims file.
+        import json as _json, tempfile as _tempfile
+        staged = {"claims": [{"port": 9090, "app": "cockpit",
+                              "prefix": "/cockpit/",
+                              "hosts": ["node.tailnet.ts.net", "portal.test"]}],
+                  "apps": [], "registered_apps": []}
+        tmp = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        _json.dump(staged, tmp)
+        tmp.close()
+        prev_apps, prev_origin = front.GATEWAY_APPS, front.TAILNET_ORIGIN
+        front.GATEWAY_APPS, front.TAILNET_ORIGIN = tmp.name, "https://tailnet.test"
         try:
-            with socket.create_connection(server.server_address, timeout=3) as client:
-                client.settimeout(3)
-                client.sendall(b"GET /podman HTTP/1.1\r\nHost: x\r\n"
-                               b"Sec-Fetch-Dest: iframe\r\nConnection: close\r\n\r\n")
-                head = client.recv(65536).decode("latin-1")
-            self.assertNotIn("x-frame-options", head.lower())
-            self.assertIn("frame-ancestors 'self' https://", head)
+            class Mux(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    raw = b"<html><body>x</body></html>"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("X-Frame-Options", "SAMEORIGIN")
+                    self.send_header("Content-Security-Policy",
+                                     "default-src 'self'; frame-ancestors 'self'")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                def log_message(self, *args):
+                    pass
+            mux = ThreadingHTTPServer(("127.0.0.1", 0), Mux)
+            front.MUX_PORT = mux.server_address[1]
+            server = ThreadingHTTPServer(("127.0.0.1", 0), front.Handler)
+            for srv in (mux, server):
+                threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                def get(host):
+                    with socket.create_connection(server.server_address, timeout=3) as client:
+                        client.settimeout(3)
+                        client.sendall(f"GET /podman HTTP/1.1\r\nHost: {host}\r\n"
+                                       "Sec-Fetch-Dest: iframe\r\nConnection: close\r\n\r\n".encode())
+                        return client.recv(65536).decode("latin-1")
+                tailnet = get("node.tailnet.ts.net")
+                self.assertNotIn("x-frame-options", tailnet.lower())
+                self.assertIn("frame-ancestors 'self' https://portal.test", tailnet)
+                public = get("portal.test")
+                self.assertIn("x-frame-options", public.lower())
+                self.assertIn("frame-ancestors 'self'", public)
+                self.assertNotIn("https://portal.test", public)
+            finally:
+                server.shutdown()
+                server.server_close()
+                mux.shutdown()
+                mux.server_close()
         finally:
-            server.shutdown()
-            server.server_close()
-            mux.shutdown()
-            mux.server_close()
+            front.GATEWAY_APPS, front.TAILNET_ORIGIN = prev_apps, prev_origin
+            __import__("os").unlink(tmp.name)
+
 
 
 

@@ -39,10 +39,11 @@ class CockpitCookie(unittest.TestCase):
 
     def test_gateway_port_cookie_is_partitioned_and_https_only(self):
         # M-540: the front reads pgw-port same-origin; Partitioned keeps
-        # the cross-site tailnet embed working.
+        # the cross-site tailnet embed working. Max-Age bounds the
+        # two-tab wrong-app staleness (ADR decision 12).
         self.assertEqual(
             gateway.gateway_port_cookie(9090, True),
-            "pgw-port=9090; Path=/; Secure; SameSite=None; Partitioned")
+            "pgw-port=9090; Path=/; Max-Age=86400; Secure; SameSite=None; Partitioned")
         self.assertIsNone(gateway.gateway_port_cookie(9090, False))
 
 

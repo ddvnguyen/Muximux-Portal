@@ -340,10 +340,19 @@ def allow_shim(csp, port):
     return "; ".join(directives)
 
 def gateway_port_cookie(port, secure):
-    """Remember the last gateway port per browser (M-540)."""
+    """Remember the last gateway port per browser (M-540).
+
+    Set by the gateway on /p/<port>/ document *and* iframe navigations
+    (the embed flow is always iframe-destined, never top-level), read by
+    portal-front for prefix-less iframe navigations with no Referer hint.
+    Same-origin readable; Partitioned so the cross-site tailnet embed keeps
+    working. Max-Age 86400 bounds staleness (two-tab wrong-app trade-off,
+    ADR decision 12). Dropped on plain HTTP where Partitioned is invalid.
+    """
     if not secure:
         return None
-    return f"pgw-port={port}; Path=/; Secure; SameSite=None; Partitioned"
+    return (f"pgw-port={port}; Path=/; Max-Age=86400; Secure; "
+            "SameSite=None; Partitioned")
 
 
 def rewrite_cookie(cookie, secure):
@@ -729,10 +738,14 @@ async def gw(request):
                 rewritten = rewrite_cookie(c, request_is_https(request))
                 resp.headers.add("Set-Cookie", rewritten)
             # M-540: remember this port for prefix-less iframe navigations.
-            # Document-only: the front consults it solely for iframe/document
-            # navigations, and a subresource must never overwrite it.
-            if (request.method == "GET" and
-                    request.headers.get("Sec-Fetch-Dest") == "document"):
+            # Iframe navigations (the embed flow) set it too: the embed
+            # flow never produces a document-destined request on the
+            # gateway, and Partitioned keeps the embed partition separate
+            # from top-level visits. Non-HTML (subresources, API) never set
+            # it: the front only consults it for navigations.
+            if (request.method == "GET" and r.status in range(200, 300) and
+                    "text/html" in r.headers.get("Content-Type", "") and
+                    request.headers.get("Sec-Fetch-Dest") in ("document", "iframe")):
                 remembered = gateway_port_cookie(port, request_is_https(request))
                 if remembered is not None:
                     resp.headers.add("Set-Cookie", remembered)
