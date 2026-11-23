@@ -141,6 +141,8 @@ navigation:
   width: 220px                 # Sidebar width
   auto_hide: false
   auto_hide_delay: 0.5s
+  indicator_size: 6            # Reveal-strip thickness in px, 1-48 (requires auto_hide: true)
+  full_page: false              # App takes the full viewport while auto-hidden (requires auto_hide: true)
   show_on_hover: true
   show_labels: true
   show_logo: true

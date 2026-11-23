@@ -147,6 +147,12 @@ export interface NavigationConfig {
   width: string;
   auto_hide: boolean;
   auto_hide_delay: string;
+  // Collapsed reveal-strip thickness in px (1-48, default 6) for the four
+  // bars while auto_hide is on. Optional so pre-key configs still parse.
+  indicator_size?: number;
+  // Full viewport for the app while auto_hide is on: collapsed nav reserves
+  // 0px and shows only the indicator. Optional, defaults off.
+  full_page?: boolean;
   show_on_hover: boolean;
   show_labels: boolean;
   show_logo: boolean;

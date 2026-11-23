@@ -328,6 +328,35 @@
           />
           <div class="text-xs text-text-muted">{m.general_shadow()}</div>
         </label>
+        <div class="flex items-center gap-3 mt-2 ps-7">
+          <label for="gen-indicator-size" class="flex-1 text-xs text-text-muted">{m.general_indicatorSize()}</label>
+          <input
+            id="gen-indicator-size"
+            type="number"
+            min="1"
+            max="48"
+            value={localConfig.navigation.indicator_size ?? 6}
+            onchange={(e) => {
+              const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+              localConfig.navigation.indicator_size = Number.isFinite(v) ? Math.min(48, Math.max(1, v)) : 6;
+            }}
+            class="w-16 px-2 py-1 text-xs bg-bg-overlay border border-border-input rounded text-text-primary"
+          />
+          <span class="text-xs text-text-muted">{m.general_indicatorSizeUnit()}</span>
+        </div>
+        <p class="text-xs text-text-muted mt-1 ps-7">{m.general_indicatorSizeDesc()}</p>
+        <label class="flex items-center gap-3 mt-2 ps-7 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={localConfig.navigation.full_page ?? false}
+            onchange={(e) => { localConfig.navigation.full_page = (e.currentTarget as HTMLInputElement).checked; }}
+            class="w-4 h-4 rounded border-border-input text-accent-text"
+          />
+          <div>
+            <div class="text-xs text-text-primary">{m.general_fullPage()}</div>
+            <div class="text-xs text-text-muted">{m.general_fullPageDesc()}</div>
+          </div>
+        </label>
       {/if}
     </div>
 

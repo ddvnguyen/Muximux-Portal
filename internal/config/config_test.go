@@ -2651,6 +2651,56 @@ func TestNavigation_ShowDockerBadge_Default(t *testing.T) {
 	}
 }
 
+// TestNavigation_IndicatorSize_Default pins the #537 defaults: pre-key
+// configs get a 6px indicator and full_page off; an explicit size survives
+// a marshal round trip; out-of-range sizes clamp into 1-48 on load.
+func TestNavigation_IndicatorSize_Default(t *testing.T) {
+	cfg, err := Parse([]byte("auth:\n  method: none\nnavigation:\n  position: left\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Navigation.IndicatorSize != 6 {
+		t.Errorf("indicator_size should default to 6, got %d", cfg.Navigation.IndicatorSize)
+	}
+	if cfg.Navigation.FullPage {
+		t.Error("full_page should default to false")
+	}
+
+	set, err := Parse([]byte("auth:\n  method: none\nnavigation:\n  indicator_size: 2\n  full_page: true\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if set.Navigation.IndicatorSize != 2 {
+		t.Errorf("explicit indicator_size: 2 was not honoured, got %d", set.Navigation.IndicatorSize)
+	}
+	if !set.Navigation.FullPage {
+		t.Error("explicit full_page: true was not honoured")
+	}
+	out, err := yaml.Marshal(set.Navigation)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "indicator_size: 2") {
+		t.Errorf("explicit size not persisted in YAML:\n%s", out)
+	}
+
+	hi, err := Parse([]byte("auth:\n  method: none\nnavigation:\n  indicator_size: 99\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if hi.Navigation.IndicatorSize != 48 {
+		t.Errorf("indicator_size: 99 should clamp to 48, got %d", hi.Navigation.IndicatorSize)
+	}
+
+	lo, err := Parse([]byte("auth:\n  method: none\nnavigation:\n  indicator_size: -3\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if lo.Navigation.IndicatorSize != 6 {
+		t.Errorf("negative indicator_size should reset to default 6, got %d", lo.Navigation.IndicatorSize)
+	}
+}
+
 func TestAppAccessConfigAllows(t *testing.T) {
 	empty := AppAccessConfig{}
 	if empty.Restricted() || !empty.Allows("anyone", "user") {

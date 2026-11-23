@@ -631,6 +631,8 @@
       width: '220px',
       auto_hide: navAutoHide,
       auto_hide_delay: navAutoHideDelay,
+      indicator_size: 6,
+      full_page: false,
       show_on_hover: navShowOnHover,
       show_labels: get(showLabels),
       show_logo: navShowLogo,

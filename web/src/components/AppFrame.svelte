@@ -6,6 +6,7 @@
   import { isFragmentOnlyChange } from '$lib/navigatePath';
   import { resolvePermissions } from '$lib/constants';
   import { isMobileViewport, isTouchDevice } from '$lib/useSwipe';
+  import { appLoading } from '$lib/appLoading';
   import * as m from '$lib/paraglide/messages.js';
 
   let { app, deepLink, ondeeplinkused }: {
@@ -113,6 +114,7 @@
     if (isLoading) {
       isLoading = false;
       loadError = true;
+      appLoading.set(false);
     }
   }
 
@@ -123,6 +125,7 @@
     loadError = false;
     isLoading = true;
     iframeReady = false;
+    appLoading.set(true);
     loadTimeout = setTimeout(handleLoadTimeout, LOAD_TIMEOUT_MS);
   }
 
@@ -147,6 +150,7 @@
     requestAnimationFrame(() => {
       iframeReady = true;
       isLoading = false;
+      appLoading.set(false);
     });
   }
 
@@ -154,6 +158,7 @@
     clearTimeout(loadTimeout);
     isLoading = false;
     loadError = true;
+    appLoading.set(false);
   }
 
   // Retry the page that failed, which is the deep link when one was opened.

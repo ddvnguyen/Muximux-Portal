@@ -60,6 +60,13 @@ Upgrade notes:
   a new internal CA.
 
 ### Added
+- **Collapsed navigation is a configurable indicator strip.** `navigation.indicator_size`
+  (1–48 px, default 6) sets the collapsed reveal-strip thickness on all four bars
+  while `auto_hide` is on, with an invisible ≥8px edge hover target so a 1px strip
+  stays usable. `navigation.full_page` gives the app the full viewport while hidden:
+  only the strip remains, at 80% transparency, doubling as the app loading progress
+  (animated sweep while the frame loads, static after). Both are in Settings, General
+  while auto-hide is on. (#537)
 - **The dashboard rechecks its session** before it opens an app (unless a
   check passed in the last minute), when you return to the tab after a
   minute or more, and after a lost connection. When the session has

@@ -524,6 +524,13 @@ type NavigationConfig struct {
 	Width              string         `yaml:"width" json:"width"`
 	AutoHide           bool           `yaml:"auto_hide" json:"auto_hide"`
 	AutoHideDelay      string         `yaml:"auto_hide_delay" json:"auto_hide_delay"`
+	// IndicatorSize is the collapsed reveal-strip thickness in px (1-48,
+	// default 6) for the top, bottom, left and right bars while auto_hide
+	// is on. Floating is unaffected. Zero means unset and loads as 6.
+	IndicatorSize int `yaml:"indicator_size" json:"indicator_size"`
+	// FullPage gives the app iframe the full viewport while auto_hide is on:
+	// the collapsed nav reserves 0px and shows only the indicator.
+	FullPage           bool           `yaml:"full_page" json:"full_page"`
 	ShowOnHover        bool           `yaml:"show_on_hover" json:"show_on_hover"`
 	ShowLabels         bool           `yaml:"show_labels" json:"show_labels"`
 	ShowLogo           bool           `yaml:"show_logo" json:"show_logo"`
@@ -900,6 +907,13 @@ func applyLoadDefaultsAndEnv(cfg *Config) error {
 	// Normalize zero-value fields that have non-zero defaults
 	if cfg.Navigation.IconScale <= 0 {
 		cfg.Navigation.IconScale = 1.0
+	}
+	// IndicatorSize 0 means unset (pre-key configs, default 6); clamp any
+	// out-of-range value so a hand edit cannot collapse or blow up the bar.
+	if cfg.Navigation.IndicatorSize <= 0 {
+		cfg.Navigation.IndicatorSize = 6
+	} else if cfg.Navigation.IndicatorSize > 48 {
+		cfg.Navigation.IndicatorSize = 48
 	}
 
 	// Splash on startup requires the home button to be visible,
@@ -2038,6 +2052,7 @@ func defaultConfig() *Config {
 			Width:              "220px",
 			AutoHide:           false,
 			AutoHideDelay:      "0.5s",
+			IndicatorSize:      6,
 			ShowOnHover:        true,
 			ShowLabels:         true,
 			ShowLogo:           true,
