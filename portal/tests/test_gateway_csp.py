@@ -10,6 +10,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
+import os
+os.environ.setdefault("PORTAL_PUBLIC_HOST", "portal.example.com")
+os.environ.setdefault("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net")
+
 loader = importlib.machinery.SourceFileLoader(
     "portal_gw", str(Path(__file__).resolve().parents[1] / "bin/portal-gw"))
 gateway = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))

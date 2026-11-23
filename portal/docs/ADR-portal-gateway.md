@@ -76,3 +76,18 @@ can hit the wrong app. Reverse this decision if the Owner reports it.
 Verified: curl matrix (document/iframe x claim/cookie/Referer/no hint),
 portal-compat 9090 7/7, Playwright Chromium+Firefox through the tailnet
 host from a cross-site embedder (Cockpit login loads, no frame-block).
+
+## Addendum 2 (2026-11-23, M-540): no placeholder hostnames
+`connect-src` carried `https://tailnet-host.example.ts.net` live because
+`PORTAL_TAILNET_HOST` is unset in the portal-front/portal-gw units and the
+code defaulted to a placeholder. Both binaries now resolve hosts via
+`_portal_hosts()`: env, then `gateway-apps.json` `tailnet_host` /
+`public_host` keys when non-empty, then claim `hosts` entries (single
+`.ts.net` host → tailnet; first other host → public). Empty = unknown:
+no probe allowance, no framing change, no Secure-cookie eligibility.
+`allow_tailnet_probe` leaves the CSP untouched when the origin is unknown.
+(Same pattern already used for `request_is_https` / `_frame_open_mux`.)
+
+Acceptance note: Playwright ran on Chromium + Firefox (Zen engine).
+WebKit is installed but its browser binary is missing in this environment
+(`pw_run.sh` absent), so WebKit is unverified — reported, not blocking.

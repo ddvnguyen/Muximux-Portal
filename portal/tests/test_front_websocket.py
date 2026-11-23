@@ -52,10 +52,71 @@ class FrontWebsocketRouting(unittest.TestCase):
             gateway.server_close()
 
     def test_tailnet_probe_origin_is_added_without_relaxing_other_sources(self):
-        result = front.allow_tailnet_probe("default-src 'self'; connect-src 'self'; object-src 'none'")
-        self.assertIn("connect-src 'self' https://tailnet-host.example.ts.net", result)
-        self.assertIn("object-src 'none'", result)
-        self.assertNotIn("connect-src *", result)
+        # M-540 addendum 2: env/JSON/empty matrix. Placeholder default is
+        # gone: unknown host leaves the CSP untouched.
+        prev_env = os.environ.get("PORTAL_TAILNET_HOST")
+        os.environ["PORTAL_TAILNET_HOST"] = "probe.tailnet.ts.net"
+        try:
+            front.TAILNET_ORIGIN = "https://probe.tailnet.ts.net"
+            result = front.allow_tailnet_probe("default-src 'self'; connect-src 'self'; object-src 'none'")
+            self.assertIn("connect-src 'self' https://probe.tailnet.ts.net", result)
+            self.assertIn("object-src 'none'", result)
+            self.assertNotIn("connect-src *", result)
+        finally:
+            if prev_env is None:
+                os.environ.pop("PORTAL_TAILNET_HOST", None)
+            else:
+                os.environ["PORTAL_TAILNET_HOST"] = prev_env
+            front.TAILNET_ORIGIN = ("https://" + front._portal_hosts()[0]
+                                    if front._portal_hosts()[0] else "")
+
+    def test_tailnet_probe_unknown_host_leaves_csp_untouched(self):
+        prev = front.TAILNET_ORIGIN
+        front.TAILNET_ORIGIN = ""
+        try:
+            csp = "default-src 'self'; connect-src 'self'; object-src 'none'"
+            self.assertEqual(front.allow_tailnet_probe(csp), csp)
+            self.assertNotIn("example.ts.net", front.allow_tailnet_probe(csp))
+        finally:
+            front.TAILNET_ORIGIN = prev
+
+    def test_portal_hosts_prefers_env_then_json_then_claims(self):
+        import json as _json, tempfile as _tempfile
+        staged = {"tailnet_host": "", "public_host": "",
+                  "claims": [{"port": 9090, "prefix": "/",
+                              "hosts": ["node.tailnet.ts.net", "portal.test"]}],
+                  "apps": [], "registered_apps": []}
+        tmp = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        _json.dump(staged, tmp)
+        tmp.close()
+        prev_apps = front.GATEWAY_APPS
+        prev_tailnet, prev_portal = (os.environ.get("PORTAL_TAILNET_HOST"),
+                                      os.environ.get("PORTAL_PUBLIC_HOST"))
+        front.GATEWAY_APPS = tmp.name
+        try:
+            os.environ.pop("PORTAL_TAILNET_HOST", None)
+            os.environ.pop("PORTAL_PUBLIC_HOST", None)
+            # claims fallback: single .ts.net host + first public host
+            self.assertEqual(front._portal_hosts(),
+                             ("node.tailnet.ts.net", "portal.test"))
+            # JSON keys win over claims when non-empty
+            staged.update(tailnet_host="json.tailnet.ts.net", public_host="json.portal.test")
+            with open(tmp.name, "w") as f:
+                _json.dump(staged, f)
+            self.assertEqual(front._portal_hosts(),
+                             ("json.tailnet.ts.net", "json.portal.test"))
+            # env wins over JSON
+            os.environ["PORTAL_TAILNET_HOST"] = "env.tailnet.ts.net"
+            self.assertEqual(front._portal_hosts()[0], "env.tailnet.ts.net")
+        finally:
+            front.GATEWAY_APPS = prev_apps
+            for key, val in (("PORTAL_TAILNET_HOST", prev_tailnet),
+                             ("PORTAL_PUBLIC_HOST", prev_portal)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+            __import__("os").unlink(tmp.name)
 
     def test_claimed_top_level_paths_redirect_to_the_portal(self):
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -274,7 +335,12 @@ class FrontWebsocketRouting(unittest.TestCase):
         _json.dump(staged, tmp)
         tmp.close()
         prev_apps, prev_origin = front.GATEWAY_APPS, front.TAILNET_ORIGIN
-        front.GATEWAY_APPS, front.TAILNET_ORIGIN = tmp.name, "https://tailnet.test"
+        prev_tailnet, prev_portal = (os.environ.get("PORTAL_TAILNET_HOST"),
+                                      os.environ.get("PORTAL_PUBLIC_HOST"))
+        front.GATEWAY_APPS = tmp.name
+        os.environ.pop("PORTAL_TAILNET_HOST", None)
+        os.environ.pop("PORTAL_PUBLIC_HOST", None)
+        front.TAILNET_ORIGIN = "https://node.tailnet.ts.net"
         try:
             class Mux(BaseHTTPRequestHandler):
                 def do_GET(self):
@@ -315,6 +381,12 @@ class FrontWebsocketRouting(unittest.TestCase):
                 mux.server_close()
         finally:
             front.GATEWAY_APPS, front.TAILNET_ORIGIN = prev_apps, prev_origin
+            for key, val in (("PORTAL_TAILNET_HOST", prev_tailnet),
+                             ("PORTAL_PUBLIC_HOST", prev_portal)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
             __import__("os").unlink(tmp.name)
 
 
