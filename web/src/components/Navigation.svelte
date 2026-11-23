@@ -12,6 +12,7 @@
   import { createEdgeSwipeHandlers, isTouchDevice } from '$lib/useSwipe';
   import MuximuxLogo from './MuximuxLogo.svelte';
   import { keybindings, formatKeybinding } from '$lib/keybindingsStore';
+  import { appLoading } from '$lib/appLoading';
   import * as m from '$lib/paraglide/messages.js';
 
   let {
@@ -275,8 +276,17 @@
   // Delay overflow:visible on top/bottom bars until height transition (300ms) completes
   let barOverflowVisible = $state(false);
   let barOverflowTimer: ReturnType<typeof setTimeout> | null = null;
-  const collapsedStripWidth = 48; // Width of visible strip when sidebar collapsed (fits icon + border)
-  const collapsedBarHeight = 6; // Height of visible strip when top/bottom bar collapsed (thin reveal strip)
+  const collapsedStripWidth = 48; // Icon-column width when a sidebar is collapsed (show_labels=false); NOT the auto-hide reveal strip
+  // Auto-hide reveal-strip thickness (px, 1-48) shared by all four bars while
+  // collapsed. <=0 means unset (pre-key configs, draft payloads) and loads
+  // as 6, matching the server clamp in applyLoadDefaultsAndEnv.
+  let rawIndicatorSize = $derived(Math.round(config.navigation.indicator_size ?? 6));
+  let indicatorSize = $derived(rawIndicatorSize <= 0 ? 6 : Math.min(48, rawIndicatorSize));
+  // full_page: collapsed nav reserves 0px and the app takes the viewport.
+  let fullPage = $derived(config.navigation.full_page === true);
+  // Minimum edge hover target (px) so a 1px strip stays usable by mouse and
+  // touch. The visual strip is indicatorSize; the hit area is transparent.
+  const EDGE_HIT_AREA = 8;
 
   // Footer drawer state (for collapsible sidebar footer)
   let footerDrawerOpen = $state(false);
@@ -310,10 +320,15 @@
   );
 
   // Calculate actual width for sidebars (for layout reflow)
-  // When auto_hide is on, always reserve only the collapsed strip in the layout.
-  // The expanded sidebar overlays the content instead of pushing it.
-  // Also collapse when user has manually collapsed the sidebar.
-  let effectiveSidebarWidth = $derived((config.navigation.auto_hide || !config.navigation.show_labels) && !isMobile ? collapsedStripWidth : sidebarWidth);
+  // When auto_hide is on, only the reveal strip counts in the layout; the
+  // expanded sidebar overlays the content instead of pushing it. full_page
+  // reserves 0px so the app takes the full viewport. Without auto_hide, a
+  // labels-off sidebar keeps its 48px icon column (collapsedStripWidth).
+  let isAutoHidden = $derived(isHidden && config.navigation.auto_hide && !isMobile);
+  let effectiveSidebarWidth = $derived(
+    config.navigation.auto_hide && !isMobile ? (fullPage ? 0 : indicatorSize) :
+    !config.navigation.show_labels && !isMobile ? collapsedStripWidth : sidebarWidth
+  );
   let mobileMenuOpen = $state(false);
   let cachedPanelBorders = 0;
   let panelOpen = $state(false);
@@ -1022,19 +1037,40 @@
 <!-- TOP NAVIGATION -->
 {#if effectivePosition === 'top'}
   {@const isCollapsedTop = isHidden && config.navigation.auto_hide}
+  {@const topHitPad = Math.max(0, EDGE_HIT_AREA - indicatorSize)}
   <nav
     class="relative z-10"
     style="
-      height: {config.navigation.auto_hide ? collapsedBarHeight + 'px' : '56px'};
+      height: {config.navigation.auto_hide ? (isCollapsedTop && fullPage ? 0 : indicatorSize) + 'px' : '56px'};
     "
     onmouseenter={handleNavEnter}
     onmouseleave={handleNavLeave}
   >
-    <!-- Inner panel - overlays content when auto_hide on, clips content as it collapses -->
+    <!-- Invisible edge hover target: keeps a 1px strip usable without adding
+         invisible layout weight beyond the strip itself -->
+    {#if config.navigation.auto_hide && isCollapsedTop}
+      <div
+        class="nav-edge-hit"
+        data-testid="nav-edge-hit"
+        style:top="0"
+        style:left="0"
+        style:right="0"
+        style:height={EDGE_HIT_AREA + 'px'}
+        style:margin-bottom={-topHitPad + 'px'}
+        style:z-index="31"
+        onmouseenter={handleNavEnter}
+      ></div>
+    {/if}
+    <!-- Inner panel - overlays content when auto_hide on, clips content as it collapses.
+         Collapsed: a translucent indicator strip (loading animation while the
+         app frame loads). Expanded or pinned: the full bar. -->
     <div
       class="top-nav-panel border-b"
+      class:nav-indicator={isCollapsedTop}
+      class:nav-indicator-loading={isCollapsedTop && $appLoading}
       style="background: var(--bg-surface); border-color: var(--border-subtle);"
-      style:height="{isCollapsedTop ? collapsedBarHeight : 56}px"
+      style:height="{isCollapsedTop ? indicatorSize : 56}px"
+      style:opacity={isCollapsedTop ? (fullPage ? 0.2 : 1) : null}
       style:overflow={!config.navigation.auto_hide || barOverflowVisible ? 'visible' : 'hidden'}
       style:box-shadow={config.navigation.auto_hide && config.navigation.show_shadow ? '0 4px 24px rgba(0,0,0,0.25)' : null}
       style:position={config.navigation.auto_hide ? 'absolute' : null}
@@ -1279,6 +1315,8 @@
 {:else if effectivePosition === 'left'}
   {@const labelsCollapsed = !config.navigation.show_labels && !isMobile}
   {@const isCollapsed = labelsCollapsed || (isHidden && config.navigation.auto_hide && !isMobile)}
+  {@const leftAutoHidden = isHidden && config.navigation.auto_hide && !isMobile}
+  {@const leftHitPad = Math.max(0, EDGE_HIT_AREA - indicatorSize)}
   <aside
     class="flex-shrink-0 h-full relative z-10
            {isMobile ? (mobileMenuOpen ? 'translate-x-0' : '-translate-x-full') : ''}"
@@ -1286,11 +1324,30 @@
     onmouseenter={handleNavEnter}
     onmouseleave={handleNavLeave}
   >
-    <!-- Content panel - overlays content when auto-hide expands -->
+    {#if leftAutoHidden}
+      <div
+        class="nav-edge-hit"
+        data-testid="nav-edge-hit"
+        style:top="0"
+        style:bottom="0"
+        style:inset-inline-start="0"
+        style:width={EDGE_HIT_AREA + 'px'}
+        style:margin-inline-end={-leftHitPad + 'px'}
+        style:z-index="31"
+        onmouseenter={handleNavEnter}
+      ></div>
+    {/if}
+    <!-- Content panel - overlays content when auto-hide expands.
+         Auto-hidden: a translucent indicator strip (loading animation while
+         the app frame loads). labels-off without auto_hide keeps the 48px
+         icon column. Expanded or pinned: the full sidebar. -->
     <div
       class="sidebar-panel flex flex-col h-full overflow-hidden border-r"
+      class:nav-indicator={leftAutoHidden}
+      class:nav-indicator-loading={leftAutoHidden && $appLoading}
       style="background: var(--bg-surface); border-color: var(--border-subtle);"
-      style:width="{isCollapsed ? collapsedStripWidth : sidebarWidth}px"
+      style:width="{leftAutoHidden ? indicatorSize : isCollapsed ? collapsedStripWidth : sidebarWidth}px"
+      style:opacity={leftAutoHidden ? (fullPage ? 0.2 : 1) : null}
       style:box-shadow={config.navigation.auto_hide && config.navigation.show_shadow && !isMobile ? '4px 0 24px rgba(0,0,0,0.25)' : null}
       style:position={config.navigation.auto_hide && !isMobile ? 'absolute' : null}
       style:top={config.navigation.auto_hide && !isMobile ? '0' : null}
@@ -1707,6 +1764,8 @@
 {:else if effectivePosition === 'right'}
   {@const labelsCollapsedRight = !config.navigation.show_labels && !isMobile}
   {@const isCollapsedRight = labelsCollapsedRight || (isHidden && config.navigation.auto_hide && !isMobile)}
+  {@const rightAutoHidden = isHidden && config.navigation.auto_hide && !isMobile}
+  {@const rightHitPad = Math.max(0, EDGE_HIT_AREA - indicatorSize)}
   <aside
     class="flex-shrink-0 h-full relative z-10
            {isMobile ? (mobileMenuOpen ? 'translate-x-0' : 'translate-x-full') : ''}"
@@ -1714,11 +1773,30 @@
     onmouseenter={handleNavEnter}
     onmouseleave={handleNavLeave}
   >
-    <!-- Content panel - overlays content when auto-hide expands -->
+    {#if rightAutoHidden}
+      <div
+        class="nav-edge-hit"
+        data-testid="nav-edge-hit"
+        style:top="0"
+        style:bottom="0"
+        style:inset-inline-end="0"
+        style:width={EDGE_HIT_AREA + 'px'}
+        style:margin-inline-start={-rightHitPad + 'px'}
+        style:z-index="31"
+        onmouseenter={handleNavEnter}
+      ></div>
+    {/if}
+    <!-- Content panel - overlays content when auto-hide expands.
+         Auto-hidden: a translucent indicator strip (loading animation while
+         the app frame loads). labels-off without auto_hide keeps the 48px
+         icon column. Expanded or pinned: the full sidebar. -->
     <div
       class="sidebar-panel flex flex-col h-full overflow-hidden border-l"
+      class:nav-indicator={rightAutoHidden}
+      class:nav-indicator-loading={rightAutoHidden && $appLoading}
       style="background: var(--bg-surface); border-color: var(--border-subtle);"
-      style:width="{isCollapsedRight ? collapsedStripWidth : sidebarWidth}px"
+      style:width="{rightAutoHidden ? indicatorSize : isCollapsedRight ? collapsedStripWidth : sidebarWidth}px"
+      style:opacity={rightAutoHidden ? (fullPage ? 0.2 : 1) : null}
       style:box-shadow={config.navigation.auto_hide && config.navigation.show_shadow && !isMobile ? '-4px 0 24px rgba(0,0,0,0.25)' : null}
       style:position={config.navigation.auto_hide && !isMobile ? 'absolute' : null}
       style:top={config.navigation.auto_hide && !isMobile ? '0' : null}
@@ -2133,19 +2211,38 @@
 <!-- BOTTOM BAR -->
 {:else if effectivePosition === 'bottom'}
   {@const isCollapsedBottom = isHidden && config.navigation.auto_hide}
+  {@const bottomHitPad = Math.max(0, EDGE_HIT_AREA - indicatorSize)}
   <nav
     class="relative z-10"
     style="
-      height: {config.navigation.auto_hide ? collapsedBarHeight + 'px' : '56px'};
+      height: {config.navigation.auto_hide ? (isCollapsedBottom && fullPage ? 0 : indicatorSize) + 'px' : '56px'};
     "
     onmouseenter={handleNavEnter}
     onmouseleave={handleNavLeave}
   >
-    <!-- Inner panel - overlays content when auto_hide on, clips content as it collapses -->
+    {#if config.navigation.auto_hide && isCollapsedBottom}
+      <div
+        class="nav-edge-hit"
+        data-testid="nav-edge-hit"
+        style:bottom="0"
+        style:left="0"
+        style:right="0"
+        style:height={EDGE_HIT_AREA + 'px'}
+        style:margin-top={-bottomHitPad + 'px'}
+        style:z-index="31"
+        onmouseenter={handleNavEnter}
+      ></div>
+    {/if}
+    <!-- Inner panel - overlays content when auto_hide on, clips content as it collapses.
+         Collapsed: a translucent indicator strip (loading animation while the
+         app frame loads). Expanded or pinned: the full bar. -->
     <div
       class="bottom-nav-panel border-t"
+      class:nav-indicator={isCollapsedBottom}
+      class:nav-indicator-loading={isCollapsedBottom && $appLoading}
       style="border-color: var(--border-subtle);"
-      style:height="{isCollapsedBottom ? collapsedBarHeight : 56}px"
+      style:height="{isCollapsedBottom ? indicatorSize : 56}px"
+      style:opacity={isCollapsedBottom ? (fullPage ? 0.2 : 1) : null}
       style:overflow={!config.navigation.auto_hide || barOverflowVisible ? 'visible' : 'hidden'}
       style:box-shadow={config.navigation.auto_hide && config.navigation.show_shadow ? '0 -4px 24px rgba(0,0,0,0.25)' : null}
       style:position={config.navigation.auto_hide ? 'absolute' : null}
@@ -2687,6 +2784,42 @@
     background: var(--glass-bg) !important;
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
+  }
+
+  /* Collapsed reveal strip: hide clipped content, show a slim indicator.
+     In full_page mode the strip floats at 20% opacity (80% transparent) so
+     the app beneath stays visible; the inline opacity carries that. */
+  .nav-indicator {
+    pointer-events: none;
+  }
+  .nav-indicator > * {
+    visibility: hidden;
+  }
+  /* Invisible edge hover target: extends the mouse/touch area beyond a 1px
+     strip without painting anything. pointer-events re-enabled here while
+     the strip itself stays inert. */
+  .nav-edge-hit {
+    position: absolute;
+    background: transparent;
+    pointer-events: auto;
+    cursor: default;
+  }
+  /* Indeterminate loading sweep across the strip while the app frame loads.
+     Uses the accent color at low alpha so it reads on any theme. Honors
+     prefers-reduced-motion via the global app.css rule (static strip). */
+  .nav-indicator-loading {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--accent-primary) 45%, transparent) 50%,
+      transparent 100%
+    ) !important;
+    background-size: 200% 100% !important;
+    animation: nav-indicator-sweep 1.2s linear infinite;
+  }
+  @keyframes nav-indicator-sweep {
+    from { background-position: 200% 0; }
+    to { background-position: -100% 0; }
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════

@@ -527,6 +527,77 @@ describe('GeneralTab', () => {
 
       expect(delaySelect.value).toBe('2s');
     });
+
+    it('renders indicator size input with the current value when auto_hide is enabled', () => {
+      const config = makeConfig();
+      config.navigation.auto_hide = true;
+      config.navigation.indicator_size = 2;
+      render(GeneralTab, {
+        props: {
+          localConfig: config,
+          localApps: [],
+          onexport: vi.fn(),
+          onimportselect: vi.fn(),
+        },
+      });
+
+      expect(screen.getByText('Indicator size')).toBeInTheDocument();
+      const sizeInput = screen.getByLabelText('Indicator size') as HTMLInputElement;
+      expect(sizeInput.value).toBe('2');
+    });
+
+    it('hides indicator size and full-page controls when auto_hide is disabled', () => {
+      const config = makeConfig();
+      config.navigation.auto_hide = false;
+      render(GeneralTab, {
+        props: {
+          localConfig: config,
+          localApps: [],
+          onexport: vi.fn(),
+          onimportselect: vi.fn(),
+        },
+      });
+
+      expect(screen.queryByText('Indicator size')).not.toBeInTheDocument();
+      expect(screen.queryByText('Full-page app')).not.toBeInTheDocument();
+    });
+
+    it('clamps indicator size into 1-48', async () => {
+      const config = makeConfig();
+      config.navigation.auto_hide = true;
+      render(GeneralTab, {
+        props: {
+          localConfig: config,
+          localApps: [],
+          onexport: vi.fn(),
+          onimportselect: vi.fn(),
+        },
+      });
+
+      const sizeInput = screen.getByLabelText('Indicator size') as HTMLInputElement;
+      await fireEvent.change(sizeInput, { target: { value: '99' } });
+      expect(config.navigation.indicator_size).toBe(48);
+      await fireEvent.change(sizeInput, { target: { value: '-5' } });
+      expect(config.navigation.indicator_size).toBe(1);
+    });
+
+    it('toggles full_page into localConfig', async () => {
+      const config = makeConfig();
+      config.navigation.auto_hide = true;
+      render(GeneralTab, {
+        props: {
+          localConfig: config,
+          localApps: [],
+          onexport: vi.fn(),
+          onimportselect: vi.fn(),
+        },
+      });
+
+      const toggle = screen.getByText('Full-page app').closest('label')!.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      expect(toggle.checked).toBe(false);
+      await fireEvent.click(toggle);
+      expect(config.navigation.full_page).toBe(true);
+    });
   });
 
   describe('icon scale slider', () => {

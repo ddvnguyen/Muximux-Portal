@@ -46,6 +46,21 @@ func TestMergeFields_ShowDockerBadge(t *testing.T) {
 	}
 }
 
+// #537: indicator_size and full_page go through the generic three-way
+// merge, so a local toggle survives a concurrent edit to another field.
+func TestMergeFields_IndicatorSizeFullPage(t *testing.T) {
+	base := config.NavigationConfig{Position: "top", IndicatorSize: 6}
+	mine := base
+	mine.IndicatorSize = 2
+	mine.FullPage = true
+	theirs := base
+	theirs.Position = "left"
+	got := mergeFields(&base, &mine, &theirs, nil)
+	if got.IndicatorSize != 2 || !got.FullPage || got.Position != "left" {
+		t.Errorf("got %+v", got)
+	}
+}
+
 func TestMergeThreeWay_ConflictMineWins(t *testing.T) { // Review Focus 1
 	base := &ClientConfigUpdate{Title: "A", Language: "en"}
 	mine := &ClientConfigUpdate{Title: "B", Language: "en"}

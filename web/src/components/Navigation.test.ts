@@ -71,6 +71,7 @@ vi.mock('$lib/debug', () => ({
 
 import Navigation from './Navigation.svelte';
 import { dockerStateStore } from '$lib/dockerStateStore';
+import { appLoading } from '$lib/appLoading';
 import type { App, AppIcon, Config, NavigationConfig, Group } from '$lib/types';
 
 // --- Helper factories ---
@@ -117,6 +118,8 @@ function makeNav(overrides: Partial<NavigationConfig> = {}): NavigationConfig {
     icon_scale: 1,
     show_splash_on_startup: false,
     show_shadow: false,
+    indicator_size: 6,
+    full_page: false,
     floating_position: 'bottom-right',
     bar_style: 'flat',
     hide_sidebar_footer: false,
@@ -2185,8 +2188,8 @@ describe('Navigation', () => {
       });
       const aside = container.querySelector('aside');
       expect(aside).toBeTruthy();
-      // effectiveSidebarWidth is collapsedStripWidth (48px) when auto_hide is on
-      expect(aside!.style.width).toBe('48px');
+      // effectiveSidebarWidth is the indicator strip (default 6px) when auto_hide is on
+      expect(aside!.style.width).toBe('6px');
     });
 
     it('right sidebar has collapsed width when auto_hide=true', () => {
@@ -2198,7 +2201,7 @@ describe('Navigation', () => {
         },
       });
       const aside = container.querySelector('aside');
-      expect(aside!.style.width).toBe('48px');
+      expect(aside!.style.width).toBe('6px');
     });
 
     it('sidebar panel uses absolute positioning when auto_hide=true', () => {
@@ -2224,6 +2227,142 @@ describe('Navigation', () => {
       const panel = container.querySelector('.sidebar-panel');
       // position should be empty/null when not auto-hiding
       expect((panel as HTMLElement).style.position).toBe('');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 24b. Indicator strip size, full-page mode, translucent loading (#537)
+  // --------------------------------------------------------------------------
+  describe('Indicator strip and full-page mode', () => {
+    it('top bar reserves the configured indicator size when auto_hide=true', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'top', auto_hide: true, indicator_size: 2 } }),
+        },
+      });
+      const nav = container.querySelector('nav');
+      expect(nav!.style.height).toBe('2px');
+      const panel = container.querySelector('.top-nav-panel') as HTMLElement;
+      expect(panel.style.height).toBe('2px');
+      expect(panel.classList.contains('nav-indicator')).toBe(true);
+    });
+
+    it('bottom bar reserves the configured indicator size when auto_hide=true', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'bottom', auto_hide: true, indicator_size: 2 } }),
+        },
+      });
+      const nav = container.querySelector('nav');
+      expect(nav!.style.height).toBe('2px');
+      const panel = container.querySelector('.bottom-nav-panel') as HTMLElement;
+      expect(panel.style.height).toBe('2px');
+      expect(panel.classList.contains('nav-indicator')).toBe(true);
+    });
+
+    it('left sidebar reserves the configured indicator size when auto_hide=true', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'left', auto_hide: true, show_labels: true, indicator_size: 2 } }),
+        },
+      });
+      const aside = container.querySelector('aside');
+      expect(aside!.style.width).toBe('2px');
+      const panel = container.querySelector('.sidebar-panel') as HTMLElement;
+      expect(panel.style.width).toBe('2px');
+    });
+
+    it('right sidebar reserves the configured indicator size when auto_hide=true', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'right', auto_hide: true, show_labels: true, indicator_size: 2 } }),
+        },
+      });
+      const aside = container.querySelector('aside');
+      expect(aside!.style.width).toBe('2px');
+      const panel = container.querySelector('.sidebar-panel') as HTMLElement;
+      expect(panel.style.width).toBe('2px');
+    });
+
+    it('treats indicator_size <= 0 as unset (default 6px)', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'top', auto_hide: true, indicator_size: -3 } }),
+        },
+      });
+      expect(container.querySelector('nav')!.style.height).toBe('6px');
+    });
+
+    it('clamps indicator_size above 48 down to 48px', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'left', auto_hide: true, show_labels: true, indicator_size: 99 } }),
+        },
+      });
+      expect(container.querySelector('aside')!.style.width).toBe('48px');
+    });
+
+    it('full_page reserves 0px and shows the indicator at 20% opacity', async () => {
+      appLoading.set(false);
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'top', auto_hide: true, indicator_size: 2, full_page: true } }),
+        },
+      });
+      const nav = container.querySelector('nav');
+      expect(nav!.style.height).toBe('0px');
+      const panel = container.querySelector('.top-nav-panel') as HTMLElement;
+      expect(panel.style.height).toBe('2px');
+      expect(panel.style.opacity).toBe('0.2');
+      // Not loading: static strip, no sweep animation class
+      expect(panel.classList.contains('nav-indicator-loading')).toBe(false);
+      // Loading: sweep animation class while the app frame loads
+      appLoading.set(true);
+      await tick();
+      expect(panel.classList.contains('nav-indicator-loading')).toBe(true);
+      appLoading.set(false);
+    });
+
+    it('renders an invisible edge hover target while collapsed', () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'top', auto_hide: true, indicator_size: 1 } }),
+        },
+      });
+      const hit = container.querySelector('[data-testid="nav-edge-hit"]') as HTMLElement;
+      expect(hit).toBeTruthy();
+      // 8px hover target over a 1px strip
+      expect(hit.style.height).toBe('8px');
+    });
+
+    it('hovering the edge strip reveals the nav', async () => {
+      const { container } = render(Navigation, {
+        props: {
+          apps: ungroupedApps,
+          currentApp: null,
+          config: makeConfig({ navigation: { position: 'top', auto_hide: true, indicator_size: 2 } }),
+        },
+      });
+      const hit = container.querySelector('[data-testid="nav-edge-hit"]') as HTMLElement;
+      await fireEvent.mouseEnter(hit);
+      const panel = container.querySelector('.top-nav-panel') as HTMLElement;
+      expect(panel.style.height).toBe('56px');
     });
   });
 

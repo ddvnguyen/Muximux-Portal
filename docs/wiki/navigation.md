@@ -98,7 +98,17 @@ navigation:
   floating_position: bottom-right # Default FAB corner (bottom-right, bottom-left, top-right, top-left); user can drag to any position
   hide_sidebar_footer: false  # Hide the footer section in left/right sidebars
   show_docker_badge: true     # Docker whale next to Docker-discovered apps (admins only)
+  indicator_size: 6           # Collapsed reveal-strip thickness in px, 1-48 (requires auto_hide)
+  full_page: false            # App takes the full viewport while auto-hidden (requires auto_hide)
 ```
+
+## Collapsed Indicator Strip
+
+When `auto_hide` is on, the collapsed navigation on all four bars (top, bottom, left, right) is a slim reveal strip instead of the 48px icon column. `navigation.indicator_size` sets its thickness in pixels (1–48, default 6, same as the old top/bottom strip). Out-of-range values clamp on load; 0 or below resets to 6. The strip keeps an invisible ≥8px edge hover target, so a 1–2px strip stays usable by mouse and touch. Floating navigation is unaffected. Change it in Settings, General, "Indicator size" (visible while auto-hide is on).
+
+With `navigation.full_page: true` the collapsed navigation reserves 0px, so the app iframe takes the whole viewport. Only the indicator strip floats over the edge at 20% opacity (80% transparent). While the app frame is loading, the strip shows an indeterminate sweep animation as the loading progress; once loaded it turns static. The animation respects `prefers-reduced-motion` (static strip). Change it in Settings, General, "Full-page app".
+
+On touch devices the invisible hover target keeps the strip reachable. On small screens Muximux forces floating navigation, so neither setting applies.
 
 ## Docker Badge
 

@@ -160,6 +160,8 @@ navigation:
   width: 220px                 # Sidebar width (left/right positions)
   auto_hide: false             # Auto-hide navigation after delay
   auto_hide_delay: 0.5s        # Delay before hiding (requires auto_hide: true)
+  indicator_size: 6            # Collapsed reveal-strip thickness in px, 1-48 (requires auto_hide: true)
+  full_page: false              # App takes the full viewport; only the indicator strip remains (requires auto_hide: true)
   show_on_hover: true          # Show navigation on mouse hover when auto-hidden
   show_labels: true            # Show app names alongside icons
   show_logo: true              # Show Muximux logo in navigation
