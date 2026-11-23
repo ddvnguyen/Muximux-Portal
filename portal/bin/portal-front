@@ -276,11 +276,9 @@ class Handler(BaseHTTPRequestHandler):
             return dict(rheaders)
         out = {}
         publics = sorted(h for h in hosts if h not in tailnets)
-        if portal_host:
-            ordered = [portal_host.split(":", 1)[0].lower()] + \
-                [h for h in publics if h != portal_host.lower()]
-        else:
-            ordered = publics or [host]
+        first = portal_host.split(":", 1)[0].lower() if portal_host else ""
+        ordered = ([first] if first else []) + \
+            [h for h in publics if h != first] or [host]
         portal = " ".join("https://" + h for h in ordered if h)
         for k, v in rheaders.items():
             if k.lower() == "x-frame-options":
