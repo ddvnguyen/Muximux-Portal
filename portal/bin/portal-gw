@@ -70,12 +70,42 @@ REGISTERED_FILE = os.path.join(HERE, "ports.registered.json")
 FALLBACK_PORTS = {3701, 9090}
 CACHE_SECONDS = 5
 
-PORTAL_HOST = "https://" + os.environ.get("PORTAL_PUBLIC_HOST", "portal.example.com")
-TAILNET_HOST = "https://" + os.environ.get("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net")
-ALLOWED_ORIGIN_HOSTS = {PORTAL_HOST.lower(), TAILNET_HOST.lower()}
-_TAILNET_BARE = os.environ.get("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net").split(":", 1)[0].lower()
-_PORTAL_BARE = os.environ.get("PORTAL_PUBLIC_HOST", "portal.example.com").split(":", 1)[0].lower()
-HTTPS_HOSTS = {_PORTAL_BARE, _TAILNET_BARE}
+def _portal_hosts():
+    """Portal hostnames without placeholders (M-540 addendum 2).
+
+    Same precedence as portal-front: env, gateway-apps.json keys, claims
+    hosts. Empty = unknown; keep the constant sets free of placeholders
+    so a Secure cookie or CORS origin can never be minted for a fake host.
+    """
+    tailnet = os.environ.get("PORTAL_TAILNET_HOST", "")
+    portal = os.environ.get("PORTAL_PUBLIC_HOST", "")
+    try:
+        with open(os.path.join(HERE, "gateway-apps.json")) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not tailnet and isinstance(data.get("tailnet_host"), str):
+        tailnet = data["tailnet_host"].strip()
+    if not portal and isinstance(data.get("public_host"), str):
+        portal = data["public_host"].strip()
+    claims = data.get("claims", []) if isinstance(data, dict) else []
+    hosts = {h.lower() for claim in claims
+             if isinstance(claim, dict)
+             for h in claim.get("hosts", []) if isinstance(h, str)}
+    tails = {h for h in hosts if h.endswith(".ts.net")}
+    if not tailnet and len(tails) == 1:
+        tailnet = next(iter(tails))
+    if not portal:
+        pubs = sorted(h for h in hosts if h not in tails)
+        portal = pubs[0] if pubs else ""
+    return tailnet, portal
+
+
+_TAILNET_BARE, _PORTAL_BARE = _portal_hosts()
+PORTAL_HOST = "https://" + _PORTAL_BARE if _PORTAL_BARE else ""
+TAILNET_HOST = "https://" + _TAILNET_BARE if _TAILNET_BARE else ""
+ALLOWED_ORIGIN_HOSTS = {h.lower() for h in (PORTAL_HOST, TAILNET_HOST) if h}
+HTTPS_HOSTS = {h for h in (_PORTAL_BARE, _TAILNET_BARE) if h}
 PROFILES_FILE = os.environ.get("PORTAL_GW_PROFILES_FILE") or os.path.join(HERE, "port-profiles.yaml")
 
 _cache = {"t": 0.0, "allow": set(FALLBACK_PORTS)}
@@ -339,6 +369,21 @@ def allow_shim(csp, port):
         directives[index] += " " + token
     return "; ".join(directives)
 
+def gateway_port_cookie(port, secure):
+    """Remember the last gateway port per browser (M-540).
+
+    Set by the gateway on /p/<port>/ document *and* iframe navigations
+    (the embed flow is always iframe-destined, never top-level), read by
+    portal-front for prefix-less iframe navigations with no Referer hint.
+    Same-origin readable; Partitioned so the cross-site tailnet embed keeps
+    working. Max-Age 86400 bounds staleness (two-tab wrong-app trade-off,
+    ADR decision 12). Dropped on plain HTTP where Partitioned is invalid.
+    """
+    if not secure:
+        return None
+    return (f"pgw-port={port}; Path=/; Max-Age=86400; Secure; "
+            "SameSite=None; Partitioned")
+
 
 def rewrite_cookie(cookie, secure):
     cookie = re.sub(r";\s*domain=[^;]*", "", cookie, flags=re.I)
@@ -389,13 +434,16 @@ def request_is_https(request):
 
     Tailscale Serve terminates TLS before forwarding to Caddy, so the
     forwarded protocol can describe the local hop. The canonical portal
-    hosts are served by the TLS Caddy sites and must receive secure cookies.
+    hosts (from _portal_hosts(): env, JSON keys, claims) are served by
+    the TLS Caddy sites and must receive secure cookies.
     """
     forwarded = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
     hosts = (request.headers.get("Host", "") + "," +
              request.headers.get("X-Forwarded-Host", "")).split(",")
     hosts = {value.strip().split(":", 1)[0].lower() for value in hosts}
-    return forwarded == "https" or bool(hosts & HTTPS_HOSTS)
+    if forwarded == "https":
+        return True
+    return bool(hosts & HTTPS_HOSTS)
 
 
 def websocket_upstream_headers(headers):
@@ -708,6 +756,18 @@ async def gw(request):
             for c in _set_cookies:
                 rewritten = rewrite_cookie(c, request_is_https(request))
                 resp.headers.add("Set-Cookie", rewritten)
+            # M-540: remember this port for prefix-less iframe navigations.
+            # Iframe navigations (the embed flow) set it too: the embed
+            # flow never produces a document-destined request on the
+            # gateway, and Partitioned keeps the embed partition separate
+            # from top-level visits. Non-HTML (subresources, API) never set
+            # it: the front only consults it for navigations.
+            if (request.method == "GET" and r.status in range(200, 300) and
+                    "text/html" in r.headers.get("Content-Type", "") and
+                    request.headers.get("Sec-Fetch-Dest") in ("document", "iframe")):
+                remembered = gateway_port_cookie(port, request_is_https(request))
+                if remembered is not None:
+                    resp.headers.add("Set-Cookie", remembered)
             ct = r.headers.get("Content-Type", "")
             if "text/html" in ct:
                 raw = await r.read()

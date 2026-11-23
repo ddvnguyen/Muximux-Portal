@@ -1,8 +1,12 @@
 import importlib.machinery
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import unittest
+
+os.environ.setdefault("PORTAL_PUBLIC_HOST", "portal.example.com")
+os.environ.setdefault("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net")
 
 loader = importlib.machinery.SourceFileLoader(
     "portal_gw", str(Path(__file__).resolve().parents[1] / "bin/portal-gw"))

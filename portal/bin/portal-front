@@ -27,12 +27,71 @@ LISTEN = ("127.0.0.1", 3736)
 EXT_JS = "/mnt/workspace/portal/ui/ports/ext.js"
 GATEWAY_APPS = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "gateway-apps.json")
 INJECT = b'<script src="/portal-ext/ext.js"></script>'
-TAILNET_ORIGIN = "https://" + os.environ.get("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net")
+
+
+def _portal_hosts():
+    """Portal hostnames without placeholders (M-540 addendum 2).
+
+    Precedence: PORTAL_TAILNET_HOST/PORTAL_PUBLIC_HOST env, then
+    gateway-apps.json `tailnet_host`/`public_host` keys when non-empty,
+    then the claims `hosts` entries (live values written by
+    portal-muximux-sync, redacted in repo). Empty string = unknown, and
+    callers must treat unknown as absent (no placeholder origin, no
+    framing allowance, no Secure-cookie eligibility).
+    """
+    tailnet = os.environ.get("PORTAL_TAILNET_HOST", "")
+    portal = os.environ.get("PORTAL_PUBLIC_HOST", "")
+    try:
+        with open(GATEWAY_APPS) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not tailnet and isinstance(data.get("tailnet_host"), str):
+        tailnet = data["tailnet_host"].strip()
+    if not portal and isinstance(data.get("public_host"), str):
+        portal = data["public_host"].strip()
+    claims = data.get("claims", []) if isinstance(data, dict) else []
+    hosts = {h.lower() for claim in claims
+             if isinstance(claim, dict)
+             for h in claim.get("hosts", []) if isinstance(h, str)}
+    tails = {h for h in hosts if h.endswith(".ts.net")}
+    if not tailnet and len(tails) == 1:
+        tailnet = next(iter(tails))
+    if not portal:
+        pubs = sorted(h for h in hosts if h not in tails)
+        portal = pubs[0] if pubs else ""
+    return tailnet, portal
+
+
+_TAILNET_HOST, _PORTAL_HOST = _portal_hosts()
+TAILNET_ORIGIN = "https://" + _TAILNET_HOST if _TAILNET_HOST else ""
+# M-540: tailnet gateway iframes blocked (Cockpit/Multica) in Zen. The
+# portal embeds the tailnet gateway cross-site; iframe navigations
+# (Sec-Fetch-Dest: iframe) to prefix-less app paths must reach the gateway,
+# not the Muximux SPA. Remember the last gateway port per browser in a
+# Partitioned cookie (set by the gateway on /p/<port>/ document responses;
+# readable here because front and gateway share the origin) and consult it
+# when the Referer hint is absent (gateway sends Referrer-Policy:
+# no-referrer, and navigations are excluded from the Referer rule).
+GW_COOKIE = "pgw-port"
+# M-540: iframe navigations only. document navigations never use the hint:
+# GET / after visiting Cockpit must reach Muximux, not /p/<last-port>/.
+# Prefix-less paths Muximux itself serves (SPA at /, APIs, proxy, portal
+# static) are never gateway-routed: the hint is a fallback for app paths
+# (Cockpit pushState URLs, Multica claims without document dest), not a
+# classifier. Kept in sync with mux.Handle* in internal/server/server.go.
+MUX_PREFIXES = ("/api/", "/proxy/", "/icons/", "/themes/",
+                "/portal-ext/", "/lease", "/ports")
+MUX_EXACT = {"/", "/sw.js", "/pgw-sw.js", "/pgw-ping", "/ws"}
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
        "te", "trailer", "transfer-encoding", "upgrade"}
 
 
 def allow_tailnet_probe(csp):
+    # Empty origin = unknown host: leave the CSP untouched rather than
+    # injecting a placeholder that can never match (M-540 addendum 2).
+    if not TAILNET_ORIGIN:
+        return csp
     directives = [part.strip() for part in csp.split(";") if part.strip()]
     for i, part in enumerate(directives):
         if part.split(None, 1)[0].lower() == "connect-src":
@@ -61,12 +120,43 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "portal-front/312"
     protocol_version = "HTTP/1.1"
 
+    def _upstream_status(self, host, port, path):
+        """HEAD-style status probe (M-540 gateway fallback).
+
+        Returns the upstream status int, or None when unreachable. Reads
+        no body; used to decide gateway-vs-Muximux before committing the
+        client response (HTTP allows exactly one status per connection).
+        """
+        headers = {k: v for k, v in self.headers.items()
+                   if k.lower() not in HOP and k.lower() != "host"}
+        if self.headers.get("Host"):
+            headers.setdefault("X-Forwarded-Host", self.headers["Host"])
+        try:
+            with urlopen(Request(f"http://{host}:{port}" + path,
+                                 headers=headers, method="GET"),
+                         timeout=10) as r:
+                r.read(1)
+                return r.status
+        except HTTPError as e:
+            try:
+                e.read()
+            except Exception:
+                pass
+            return e.code
+        except (URLError, OSError):
+            return None
+
     def _proxy_to(self, host, port, inject, path=None):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         url = f"http://{host}:{port}" + (self.path if path is None else path)
         headers = {k: v for k, v in self.headers.items()
                    if k.lower() not in HOP and k.lower() != "host"}
+        # M-540: the gateway decides Secure-cookie eligibility from the
+        # original host (tailscale serve terminates TLS before Caddy, so
+        # X-Forwarded-Proto can describe the local hop). Preserve it.
+        if self.headers.get("Host"):
+            headers.setdefault("X-Forwarded-Host", self.headers["Host"])
         headers["Accept-Encoding"] = "identity"  # injection needs raw bytes
         try:
             with urlopen(Request(url, data=body, headers=headers,
@@ -91,13 +181,14 @@ class Handler(BaseHTTPRequestHandler):
             status, rheaders, raw = e.code, e.headers, e.read()
         except URLError as e:
             self.send_error(502, f"upstream unreachable: {e.reason}")
-            return
+            return None
         ctype = (rheaders.get("Content-Type") or "")
         if inject and "text/html" in ctype and b"</body>" in raw:
             raw = raw.replace(b"</body>", INJECT + b"</body>", 1)
             rheaders = {k: allow_tailnet_probe(v) if k.lower() == "content-security-policy" else v
                         for k, v in rheaders.items()
                         if k.lower() != "content-length"}
+            rheaders = self._frame_open_mux(raw, rheaders)
         self.send_response(status)
         for k, v in rheaders.items():
             if k.lower() not in HOP:
@@ -106,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(raw)
+        return status
 
 
     def _relay_ws(self, host, port):
@@ -127,9 +219,86 @@ class Handler(BaseHTTPRequestHandler):
         relay(down, up)
         up.close()
 
+    def _gw_port_hint(self):
+        """Gateway port hint for a prefix-less iframe navigation (M-540).
+
+        The gateway remembers the last /p/<port>/ document per browser in
+        the pgw-port cookie (Partitioned, same-origin readable here).
+        Returns the port int, else None. Iframe navigations only: document
+        navigations never consult it (GET / must reach Muximux), and
+        Muximux's own routes (/, /api/*, /proxy/*, ...) are excluded so a
+        stale cookie can never hijack the portal shell.
+        """
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            return None
+        if self.headers.get("Sec-Fetch-Dest") != "iframe":
+            return None
+        if self.path.startswith("/p/"):
+            return None
+        bare = self.path.split("?", 1)[0]
+        if bare in MUX_EXACT or bare.startswith(MUX_PREFIXES):
+            return None
+        cookie = self.headers.get("Cookie", "")
+        ports = []
+        for part in cookie.split(";"):
+            name, _, value = part.partition("=")
+            if name.strip() == GW_COOKIE:
+                try:
+                    port = int(value.strip())
+                except ValueError:
+                    continue
+                if 1 <= port <= 65535:
+                    ports.append(port)
+        return ports[-1] if ports else None
+
+    def _frame_open_mux(self, raw, rheaders):
+        """Open Muximux framing on the tailnet host (M-540 defence in depth).
+
+        A mis-route must render the SPA, never a blank browser error:
+        drop X-Frame-Options and widen frame-ancestors to the portal
+        public host. Tailnet host only (hosts from _portal_hosts(), no
+        hostnames in code): the public portal keeps strict framing.
+        """
+        tailnet, portal_host = _portal_hosts()
+        try:
+            with open(GATEWAY_APPS) as f:
+                claims = json.load(f).get("claims", [])
+        except (OSError, ValueError):
+            claims = []
+        hosts = {h.lower() for claim in claims
+                 if isinstance(claim, dict)
+                 for h in claim.get("hosts", []) if isinstance(h, str)}
+        tailnets = {h for h in hosts if h.endswith(".ts.net")}
+        if tailnet:
+            tailnets.add(tailnet.split(":", 1)[0].lower())
+        host = (self.headers.get("Host") or "").split(":", 1)[0].lower()
+        if host not in tailnets:
+            return dict(rheaders)
+        out = {}
+        publics = sorted(h for h in hosts if h not in tailnets)
+        first = portal_host.split(":", 1)[0].lower() if portal_host else ""
+        ordered = ([first] if first else []) + \
+            [h for h in publics if h != first] or [host]
+        portal = " ".join("https://" + h for h in ordered if h)
+        for k, v in rheaders.items():
+            if k.lower() == "x-frame-options":
+                continue
+            if k.lower() == "content-security-policy":
+                parts = [p.strip() for p in v.split(";") if p.strip()]
+                kept = [p for p in parts
+                        if p.split(None, 1)[0].lower() != "frame-ancestors"]
+                kept.append("frame-ancestors 'self' " + portal)
+                v = "; ".join(kept)
+            out[k] = v
+        return out
+
     def _handle(self):
         parts = urlsplit(self.path)
-        if self.command == "GET" and self.headers.get("Sec-Fetch-Dest") == "document":
+        # Claim redirect: top-level documents AND iframe navigations (the
+        # embed flow is always iframe-destined). The cookie hint below is
+        # iframe-only; claims stay broad because /moct/ is Muximux-routed.
+        if (self.command == "GET" and self.headers.get("Sec-Fetch-Dest")
+                in ("document", "iframe")):
             try:
                 with open(GATEWAY_APPS) as f:
                     claims = json.load(f).get("claims", [])
@@ -169,6 +338,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.path.split("?", 1)[0] not in ("/sw.js", "/pgw-sw.js", "/pgw-ping")):
             return self._proxy_to(GW_HOST, GW_PORT, inject=False,
                                   path=f"/p/{match.group(1)}" + self.path)
+        # M-540: prefix-less iframe navigation with no usable Referer (the
+        # gateway sends Referrer-Policy: no-referrer): fall back to the
+        # pgw-port cookie the gateway set on the last gateway document.
+        # Muximux routes are excluded in _gw_port_hint. Probe the gateway
+        # first: a 403/404 (stale port, unknown path) falls back to
+        # Muximux rather than surfacing as a portal error.
+        hint = self._gw_port_hint()
+        if hint is not None:
+            gw_path = f"/p/{hint}" + self.path
+            probe = self._upstream_status(GW_HOST, GW_PORT, gw_path)
+            if probe is not None and probe not in (403, 404):
+                return self._proxy_to(GW_HOST, GW_PORT, inject=False,
+                                      path=gw_path)
+            if probe is None:
+                return self._proxy_to(GW_HOST, GW_PORT, inject=False,
+                                      path=gw_path)
         if (self.headers.get("Upgrade", "").lower() == "websocket" or
                 self.path.startswith("/ws")):
             if self.path.startswith("/p/"):

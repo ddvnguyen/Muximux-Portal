@@ -28,3 +28,66 @@ One portal at `<portal-public-host>` (Muximux front end, behind Cloudflare Acces
 
 ## Decision 11 (2026-11-14): origin handling
 Default `origin: rewrite` for every port, guarded: the gateway validates the real `Origin`/`Sec-Fetch-Site` on state-changing methods and WebSocket upgrades against {portal host, tailnet host, localhost/127.0.0.1} before rewriting to `http://localhost:<port>`; others get 403. Reason: the gateway sets `SameSite=None` cookies, so an unguarded rewrite would allow cross-site CSRF into the upstream apps. Override per port with `origin: none|<explicit>` in `port-profiles.yaml`. Implemented by M-323.
+
+## Decision 12 (2026-11-23, M-540): tailnet gateway iframe navigations
+Symptom (Owner, Zen/Firefox + Tailscale): Cockpit tab showed "will not allow
+... embedded"; Multica only worked via the public portal host.
+
+Root cause: `portal-front` routed prefix-less requests to Muximux unless
+(a) the `Sec-Fetch-Dest: document` claim redirect fired or (b) a
+same-origin `/p/<port>/` Referer matched (navigations excluded). Iframe
+navigations (`Sec-Fetch-Dest: iframe`, e.g. Multica `/moct/`) got the
+Muximux SPA with `X-Frame-Options: SAMEORIGIN` + `frame-ancestors 'self'`,
+which the cross-site tailnet embed refuses. Cockpit pushState URLs
+(`/podman`, `/cockpit/login`) likewise had no hint: the gateway sends
+`Referrer-Policy: no-referrer`, and iframe reloads carry no usable Referer.
+
+Fix (cookie over Referer-policy change — no-referrer stays: an iframe
+reload or Cockpit pushState URL carries the *embedder's* URL as Referer,
+never the previous iframe document, so same-origin Referer-Policy cannot
+help the reported case):
+1. Claim redirect fires for `Sec-Fetch-Dest` in (`document`, `iframe`).
+2. The gateway remembers the last `/p/<port>/` document *or iframe* HTML
+   navigation per browser in a `pgw-port` cookie (`Path=/; Max-Age=86400;
+   Secure; SameSite=None; Partitioned`; GET 2xx `text/html` only, never
+   subresources). The front consults it for prefix-less *iframe*
+   navigations only (document navigations never use it: `GET /` after
+   visiting Cockpit must reach Muximux) when the Referer hint is absent.
+   Port must parse as 1-65535; a gateway 403/404 on a hint-routed nav
+   falls back to Muximux. Muximux's own routes (`/`, `/api/*`,
+   `/proxy/*`, `/icons/*`, `/themes/*`, `/portal-ext/*`, `/lease`,
+   `/ports`, `/sw.js`, `/pgw-sw.js`, `/pgw-ping`, `/ws`) are never
+   hint-routed (list kept in sync with `mux.Handle*` in
+   `internal/server/server.go`).
+3. The front forwards the original `Host` as `X-Forwarded-Host` so the
+   gateway's `request_is_https` (hosts from `gateway-apps.json` claim
+   entries, same file the front reads) recognizes the TLS portal hosts
+   behind `tailscale serve` TLS termination.
+4. Defence in depth, tailnet-scoped: Muximux responses on the tailnet
+   host (`Host == PORTAL_TAILNET_HOST`) drop `X-Frame-Options` and widen
+   to `frame-ancestors 'self' https://<portal-public-host>` — a mis-route
+   renders the SPA, never a blank browser error. The public host keeps
+   strict framing.
+
+Limitation (accepted trade-off): the cookie holds the last port, so with
+two gateway apps open in different tabs a reload of a prefix-less URL
+can hit the wrong app. Reverse this decision if the Owner reports it.
+
+Verified: curl matrix (document/iframe x claim/cookie/Referer/no hint),
+portal-compat 9090 7/7, Playwright Chromium+Firefox through the tailnet
+host from a cross-site embedder (Cockpit login loads, no frame-block).
+
+## Addendum 2 (2026-11-23, M-540): no placeholder hostnames
+`connect-src` carried `https://tailnet-host.example.ts.net` live because
+`PORTAL_TAILNET_HOST` is unset in the portal-front/portal-gw units and the
+code defaulted to a placeholder. Both binaries now resolve hosts via
+`_portal_hosts()`: env, then `gateway-apps.json` `tailnet_host` /
+`public_host` keys when non-empty, then claim `hosts` entries (single
+`.ts.net` host → tailnet; first other host → public). Empty = unknown:
+no probe allowance, no framing change, no Secure-cookie eligibility.
+`allow_tailnet_probe` leaves the CSP untouched when the origin is unknown.
+(Same pattern already used for `request_is_https` / `_frame_open_mux`.)
+
+Acceptance note: Playwright ran on Chromium + Firefox (Zen engine).
+WebKit is installed but its browser binary is missing in this environment
+(`pw_run.sh` absent), so WebKit is unverified — reported, not blocking.
