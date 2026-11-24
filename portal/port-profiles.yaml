@@ -15,6 +15,10 @@ profiles:
     tailnet_url: ""
     spa: true
     origin: rewrite
+    # M-551: log this port in as this user when the request proves the
+    # identity out-of-band (Cloudflare Access email or tailnet login
+    # matching this value). Narrow to 3701 only.
+    auto_login: ddvnguyen@gmail.com
   9090:
     label: Cockpit
     scheme: https
