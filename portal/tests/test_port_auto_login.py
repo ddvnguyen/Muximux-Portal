@@ -389,6 +389,73 @@ class PortalLoginUrl(unittest.TestCase):
         self.assertEqual(seen["url"], "http://127.0.0.1:18791/auth/portal-session")
 
 
+class PortalLoginExec(unittest.TestCase):
+    def test_off_by_default(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", ""):
+            self.assertEqual(gateway.portal_login_exec(), (None, None, None))
+
+    def test_config_tuple(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", "multica_backend_1"):
+            with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_SECRET_FILE", "/run/secrets/x"):
+                with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791"):
+                    self.assertEqual(gateway.portal_login_exec(),
+                                     ("multica_backend_1", "/run/secrets/x", "127.0.0.1:3791"))
+
+    def _run_exec(self, script_out, returncode=0):
+        seen = {}
+
+        class FakeProc:
+            def __init__(self):
+                self.returncode = returncode
+
+            async def communicate(self):
+                return (script_out, b"")
+
+            def kill(self):
+                seen["killed"] = True
+
+        async def fake_create(*argv, **kwargs):
+            seen["argv"] = argv
+            return FakeProc()
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with mock.patch.object(gateway.asyncio, "create_subprocess_exec", fake_create):
+            with mock.patch.object(gateway.asyncio, "wait_for", fake_wait_for):
+                with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", "multica_backend_1"):
+                    with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_SECRET_FILE", "/run/secrets/x"):
+                        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791"):
+                            got = asyncio.run(gateway.mint_portal_session_exec(3701, "s3cret"))
+        return got, seen
+
+    def test_argv_has_no_secret(self):
+        body = ("HTTP/1.0 200 OK\r\n"
+                'Set-Cookie: multica_auth=tok; Path=/; HttpOnly\r\n'
+                'Set-Cookie: multica_csrf=c; Path=/\r\n\r\n{}')
+        got, seen = self._run_exec(body.encode())
+        argv = seen["argv"]
+        self.assertEqual(argv[0], "podman")
+        self.assertIn("multica_backend_1", argv)
+        flat = " ".join(argv)
+        self.assertNotIn("s3cret", flat)
+        self.assertIn("cat", flat)
+        self.assertEqual(got, ["multica_auth=tok; Path=/; HttpOnly",
+                               "multica_csrf=c; Path=/"])
+
+    def test_nonzero_exit_falls_through(self):
+        got, _ = self._run_exec(b"", returncode=1)
+        self.assertEqual(got, [])
+
+    def test_non_200_falls_through(self):
+        got, _ = self._run_exec(b"HTTP/1.0 404 Not Found\r\n\r\nnope")
+        self.assertEqual(got, [])
+
+    def test_garbage_output_falls_through(self):
+        got, _ = self._run_exec(b"not http at all")
+        self.assertEqual(got, [])
+
+
 class PortalLoginSecret(unittest.TestCase):
     def test_file_fallback(self):
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
