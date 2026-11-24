@@ -163,6 +163,10 @@ SPOOFABLE_IDENTITY_HEADERS = frozenset({
 # in tests, cached 60 s in the gateway).
 PORTAL_LOGIN_SECRET = os.environ.get("MULTICA_PORTAL_LOGIN_SECRET", "")
 PORTAL_LOGIN_SECRET_FILE = os.environ.get("MULTICA_PORTAL_LOGIN_SECRET_FILE", "")
+# M-551 redesign: the portal-session endpoint left the public router for a
+# dedicated internal listener (MULTICA_PORTAL_LOGIN_ADDR, 127.0.0.1-only).
+# This URL points the mint call at that listener instead of the app port.
+PORTAL_LOGIN_URL = os.environ.get("MULTICA_PORTAL_LOGIN_URL", "")
 PORTAL_LOGIN_JWKS_FILE = os.environ.get(
     "MULTICA_PORTAL_LOGIN_JWKS_FILE",
     os.path.expanduser("~/.cloudflared/ddvcloud.cloudflareaccess.com-jwks"))
@@ -454,18 +458,34 @@ def auto_login_identity(request, edge_headers, peer_ip):
     return ""
 
 
+def portal_login_url(port):
+    """M-551 redesign: mint URL for `port`.
+
+    MULTICA_PORTAL_LOGIN_URL overrides the default loopback app-port URL
+    (the internal listener). A per-port `{port}` placeholder is supported
+    so one template serves every auto_login port; otherwise the URL is
+    used as-is (the 3701-only deployment needs no placeholder)."""
+    if PORTAL_LOGIN_URL:
+        try:
+            return PORTAL_LOGIN_URL.format(port=port)
+        except (IndexError, KeyError, ValueError):
+            return PORTAL_LOGIN_URL
+    return f"http://127.0.0.1:{port}/auth/portal-session"
+
+
 async def mint_portal_session(sess, port, secret):
-    """M-551: call multica's loopback /auth/portal-session, return Set-Cookies.
+    """M-551: call the internal portal-session listener, return Set-Cookies.
 
     The secret travels ONLY on this loopback subrequest, never on proxied
-    upstream traffic. Any failure (endpoint disabled, wrong secret, the
-    port's multica down) returns [] and the caller serves the normal
-    upstream response (OTP form), so a misconfigured secret degrades to
-    today's login, never to an error page."""
+    upstream traffic. Any failure (listener off, wrong secret, multica
+    down) returns [] and the caller serves the normal upstream response
+    (OTP form), so a misconfigured secret degrades to today's login,
+    never to an error page."""
     if not secret:
         return []
+    url = portal_login_url(port)
     try:
-        async with sess.post(f"http://127.0.0.1:{port}/auth/portal-session",
+        async with sess.post(url,
                              headers={"X-Portal-Login-Secret": secret},
                              timeout=aiohttp.ClientTimeout(total=10)) as r:
             if r.status != 200:

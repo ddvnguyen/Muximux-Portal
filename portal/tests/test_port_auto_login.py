@@ -344,6 +344,51 @@ class MintPortalSession(unittest.TestCase):
         self.assertEqual(asyncio.run(gateway.mint_portal_session(FakeSess(), 3701, "")), [])
 
 
+class PortalLoginUrl(unittest.TestCase):
+    def test_default_is_loopback_app_port(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_URL", ""):
+            self.assertEqual(gateway.portal_login_url(3701),
+                             "http://127.0.0.1:3701/auth/portal-session")
+
+    def test_override_template(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_URL",
+                               "http://127.0.0.1:{port}/auth/portal-session"):
+            self.assertEqual(gateway.portal_login_url(3701),
+                             "http://127.0.0.1:3701/auth/portal-session")
+
+    def test_override_plain(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_URL",
+                               "http://127.0.0.1:18791/auth/portal-session"):
+            self.assertEqual(gateway.portal_login_url(3701),
+                             "http://127.0.0.1:18791/auth/portal-session")
+
+    def test_mint_uses_override_url(self):
+        seen = {}
+
+        class FakeResp:
+            status = 200
+            headers = {"Set-Cookie": "multica_auth=tok; Path=/; HttpOnly"}
+
+            def getall(self, name, default=None):
+                return [self.headers[name]] if name in self.headers else []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class FakeSess:
+            def post(self, url, headers=None, timeout=None):
+                seen["url"] = url
+                return FakeResp()
+
+        with mock.patch.object(gateway, "PORTAL_LOGIN_URL",
+                               "http://127.0.0.1:18791/auth/portal-session"):
+            asyncio.run(gateway.mint_portal_session(FakeSess(), 3701, "s3cret"))
+        self.assertEqual(seen["url"], "http://127.0.0.1:18791/auth/portal-session")
+
+
 class PortalLoginSecret(unittest.TestCase):
     def test_file_fallback(self):
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
