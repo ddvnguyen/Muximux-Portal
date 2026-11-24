@@ -177,7 +177,19 @@ PORTAL_LOGIN_URL = os.environ.get("MULTICA_PORTAL_LOGIN_URL", "")
 PORTAL_LOGIN_EXEC_CONTAINER = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_CONTAINER", "")
 PORTAL_LOGIN_EXEC_SECRET_FILE = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_SECRET_FILE", "")
 PORTAL_LOGIN_EXEC_TARGET = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791")
-PORTAL_LOGIN_EXEC_TIMEOUT = float(os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_TIMEOUT", "8") or 8)
+def _exec_timeout_seconds(raw):
+    """M-551: exec timeout with a safe default. A typo'd env value must
+    degrade to the default, never kill the gateway at import."""
+    try:
+        value = float(raw or 8)
+    except (TypeError, ValueError):
+        return 8.0
+    if value <= 0:
+        return 8.0
+    return value
+
+
+PORTAL_LOGIN_EXEC_TIMEOUT = _exec_timeout_seconds(os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_TIMEOUT"))
 PORTAL_LOGIN_JWKS_FILE = os.environ.get(
     "MULTICA_PORTAL_LOGIN_JWKS_FILE",
     os.path.expanduser("~/.cloudflared/ddvcloud.cloudflareaccess.com-jwks"))
@@ -485,13 +497,20 @@ def portal_login_url(port):
 
 
 def portal_login_exec():
-    """M-551 exec fallback: (container, secret_file, target) or (None, ...).
+    """M-551 exec fallback: (container, secret_source, target) or (None, ...).
 
-    Off when MULTICA_PORTAL_LOGIN_EXEC_CONTAINER is unset."""
+    Off when MULTICA_PORTAL_LOGIN_EXEC_CONTAINER is unset. secret_source
+    is a shell fragment evaluated INSIDE the container: `$(cat <file>)`
+    when MULTICA_PORTAL_LOGIN_EXEC_SECRET_FILE names a mounted file,
+    else `$(printenv MULTICA_PORTAL_LOGIN_SECRET)` for the env-passed
+    secret (prod today). Either way the value never crosses into host argv."""
     if not PORTAL_LOGIN_EXEC_CONTAINER:
         return None, None, None
-    return (PORTAL_LOGIN_EXEC_CONTAINER,
-            PORTAL_LOGIN_EXEC_SECRET_FILE or "/run/secrets/portal_login_secret",
+    if PORTAL_LOGIN_EXEC_SECRET_FILE:
+        source = "$(cat " + PORTAL_LOGIN_EXEC_SECRET_FILE + ")"
+    else:
+        source = "$(printenv MULTICA_PORTAL_LOGIN_SECRET)"
+    return (PORTAL_LOGIN_EXEC_CONTAINER, source,
             PORTAL_LOGIN_EXEC_TARGET or "127.0.0.1:3791")
 
 
@@ -499,11 +518,11 @@ async def mint_portal_session_exec(port, secret):
     """M-551 exec fallback: mint inside the backend container via podman exec.
 
     Fixed argv, no shell. The secret travels inside the container only:
-    `cat` reads it from the mounted secret file into the request header.
+    command substitution reads it from the mounted file or container env.
     Parses the raw HTTP response for Set-Cookie headers. Any failure
     (timeout, non-zero exit, non-200) returns [] so the caller falls
     through to the OTP form. Single attempt, no retry."""
-    container, secret_file, target = portal_login_exec()
+    container, secret_source, target = portal_login_exec()
     if not container or not secret:
         return []
     host, _, dest_port = target.partition(":")
@@ -514,15 +533,17 @@ async def mint_portal_session_exec(port, secret):
     # argv carries only the file path, never the value.
     crlf = chr(13) + chr(10)
     q = chr(39)
+    dq = chr(34)
     # printf FORMAT: secret is %s, filled by the command substitution that
-    # follows it — both expand inside the container. Host argv carries only
-    # the secret FILE path, never the value.
+    # follows it — both expand inside the container (double quotes: sh
+    # does NOT expand $(...) inside single quotes). Host argv carries only
+    # the file path or env var NAME, never the value.
     fmt = (q + "POST /auth/portal-session HTTP/1.0" + crlf
            + "Host: 127.0.0.1" + crlf
            + "Content-Type: application/json" + crlf
            + "Content-Length: 2" + crlf
            + "X-Portal-Login-Secret: %s" + crlf + crlf + "{}" + q)
-    script = ("printf " + fmt + " " + q + "$(cat " + secret_file + ")" + q
+    script = ("printf " + fmt + " " + dq + secret_source + dq
               + " | nc -w 5 " + host + " " + dest_port)
     argv = ["podman", "exec", "-i", container, "sh", "-c", script]
     try:
