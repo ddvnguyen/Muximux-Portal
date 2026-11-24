@@ -142,6 +142,33 @@ HTTPS_HOSTS = {h.split("://", 1)[-1].split(":", 1)[0].lower()
                for h in ALLOWED_ORIGIN_HOSTS if "://" in h}
 PROFILES_FILE = os.environ.get("PORTAL_GW_PROFILES_FILE") or os.path.join(HERE, "port-profiles.yaml")
 
+SPOOFABLE_IDENTITY_HEADERS = frozenset({
+    # M-551: edge-asserted identity. Cloudflare Access adds these on the
+    # public host; tailscale serve adds the Tailscale-User-* set on the
+    # tailnet host. A client reaching the gateway any other way can forge
+    # them, so every use below verifies the value out-of-band (Access JWT
+    # signature, tailscale whois login) and the raw header is never read
+    # past this strip point. Strip FIRST so nothing proxied or logged
+    # downstream can mistake a forgery for an edge assertion.
+    "cf-access-authenticated-user-email", "cf-access-jwt-assertion",
+    "tailscale-user-login", "tailscale-user-name", "tailscale-user-profile-pic",
+})
+
+# M-551: trusted-gateway auto-login (multica :3701 always logs in as the
+# profile's auto_login user). The gateway holds the secret and calls
+# multica's POST /auth/portal-session over loopback; multica mints the
+# session when the secret matches and the peer is loopback. Never forward
+# the secret upstream: it leaves the box only on that loopback call.
+# Rotation: rewrite the file, restart/sighup the gateway (read per call
+# in tests, cached 60 s in the gateway).
+PORTAL_LOGIN_SECRET = os.environ.get("MULTICA_PORTAL_LOGIN_SECRET", "")
+PORTAL_LOGIN_SECRET_FILE = os.environ.get("MULTICA_PORTAL_LOGIN_SECRET_FILE", "")
+PORTAL_LOGIN_JWKS_FILE = os.environ.get(
+    "MULTICA_PORTAL_LOGIN_JWKS_FILE",
+    os.path.expanduser("~/.cloudflared/ddvcloud.cloudflareaccess.com-jwks"))
+_portal_secret_cache = {"t": 0.0, "secret": ""}
+_jwks_cache = {"t": 0.0, "keys": {}}
+
 _cache = {"t": 0.0, "allow": set(FALLBACK_PORTS)}
 
 
@@ -261,6 +288,166 @@ def port_session(app, port):
     if port_is_loopback_source(port):
         return app["sess_lo"]
     return app["sess"]
+
+def port_auto_login(port):
+    """M-551: the email this port auto-logs-in as, or "" when unset."""
+    return str(port_profile(port).get("auto_login", "") or "").strip().lower()
+
+
+def strip_spoofable_identity(headers):
+    """M-551: drop edge-asserted identity headers from the inbound request.
+
+    `headers` is a mutable case-insensitive mapping (aiohttp's CIMultiDict
+    qualifies). Returns the removed values for the verified-identity path;
+    the caller MUST NOT trust them without out-of-band verification."""
+    removed = {}
+    for key in list(headers.keys()):
+        if key.lower() in SPOOFABLE_IDENTITY_HEADERS:
+            try:
+                removed[key.lower()] = headers.pop(key)
+            except KeyError:
+                pass
+    return removed
+
+
+def portal_login_secret():
+    """M-551: shared secret for multica's /auth/portal-session (cached 60 s)."""
+    now = time.time()
+    if now - _portal_secret_cache["t"] < 60:
+        return _portal_secret_cache["secret"]
+    secret = PORTAL_LOGIN_SECRET or ""
+    path = PORTAL_LOGIN_SECRET_FILE
+    if not secret and path:
+        try:
+            with open(path) as f:
+                secret = f.read().strip()
+        except OSError as e:
+            print(f"portal-gw: portal secret file unreadable ({e})", flush=True)
+    _portal_secret_cache.update(t=now, secret=secret)
+    return secret
+
+
+def _load_jwks():
+    """M-551: Cloudflare Access JWKS for Cf-Access-Jwt-Assertion (cached 1 h)."""
+    now = time.time()
+    if now - _jwks_cache["t"] < 3600:
+        return _jwks_cache["keys"]
+    keys = {}
+    try:
+        with open(PORTAL_LOGIN_JWKS_FILE) as f:
+            data = json.load(f)
+        for entry in data.get("keys", []) if isinstance(data, dict) else []:
+            if isinstance(entry, dict) and entry.get("kid") and entry.get("n") and entry.get("e"):
+                keys[entry["kid"]] = entry
+    except (OSError, ValueError) as e:
+        print(f"portal-gw: portal JWKS unreadable ({e})", flush=True)
+    _jwks_cache.update(t=now, keys=keys)
+    return keys
+
+
+def verify_access_identity(assertion, email):
+    """M-551: verify a Cf-Access-Jwt-Assertion and match its email claim.
+
+    Returns the verified email, or "" when the token is missing, expired,
+    badly signed, or names a different email than the edge header. The
+    caller compares the result against the port's auto_login allowlist;
+    a forged header alone never authenticates."""
+    if not assertion or not email:
+        return ""
+    try:
+        import jwt as pyjwt
+    except ImportError:
+        print("portal-gw: PyJWT missing, Access verify unavailable", flush=True)
+        return ""
+    keys = _load_jwks()
+    try:
+        header = pyjwt.get_unverified_header(assertion)
+        entry = keys.get(header.get("kid", ""))
+        if entry is None:
+            return ""
+        from jwt.algorithms import RSAAlgorithm
+        key = RSAAlgorithm.from_jwk(json.dumps(entry))
+        claims = pyjwt.decode(assertion, key, algorithms=["RS256"],
+                              options={"verify_aud": False})
+    except Exception:
+        return ""
+    token_email = str(claims.get("email", "") or "").strip().lower()
+    if not token_email or token_email != email.strip().lower():
+        return ""
+    return token_email
+
+
+def tailscale_login_for(peer_ip):
+    """M-551: tailnet login owning `peer_ip` via `tailscale whois` (""). 
+
+    Fails closed: any error (binary missing, unknown IP, parse failure)
+    means no identity, and the caller falls through to the OTP form."""
+    if not peer_ip:
+        return ""
+    try:
+        import subprocess
+        out = subprocess.run(["tailscale", "whois", "--json", peer_ip],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return ""
+        data = json.loads(out.stdout or "{}")
+        user = data.get("UserProfile") or {}
+        return str(user.get("LoginName", "") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def auto_login_identity(request, edge_headers, peer_ip):
+    """M-551: verified auto-login email for this request, or "".
+
+    Accepts the request ONLY when the out-of-band proof names the port's
+    own auto_login email: verified Access JWT on the public host, or the
+    tailscale whois login on the tailnet host. `edge_headers` are the
+    values stripped from the inbound request before proxying."""
+    want = port_auto_login(int(request.match_info["port"]))
+    if not want:
+        return ""
+    proven = ""
+    jwt_email = verify_access_identity(edge_headers.get("cf-access-jwt-assertion", ""),
+                                       edge_headers.get("cf-access-authenticated-user-email", ""))
+    if jwt_email:
+        proven = jwt_email
+    elif peer_ip:
+        proven = tailscale_login_for(peer_ip)
+    if proven and proven == want:
+        return proven
+    return ""
+
+
+async def mint_portal_session(sess, port, secret):
+    """M-551: call multica's loopback /auth/portal-session, return Set-Cookies.
+
+    The secret travels ONLY on this loopback subrequest, never on proxied
+    upstream traffic. Any failure (endpoint disabled, wrong secret, the
+    port's multica down) returns [] and the caller serves the normal
+    upstream response (OTP form), so a misconfigured secret degrades to
+    today's login, never to an error page."""
+    if not secret:
+        return []
+    try:
+        async with sess.post(f"http://127.0.0.1:{port}/auth/portal-session",
+                             headers={"X-Portal-Login-Secret": secret},
+                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status != 200:
+                print(f"portal-gw: portal-session {port} -> {r.status}", flush=True)
+                return []
+            return r.headers.getall("Set-Cookie", [])
+    except Exception as e:
+        print(f"portal-gw: portal-session {port} failed ({e!r})", flush=True)
+        return []
+
+
+def has_auth_cookie(cookie_header):
+    """M-551: True when the request already carries a multica session."""
+    if not cookie_header:
+        return False
+    return any(p.split("=", 1)[0].strip() == "multica_auth"
+               for p in cookie_header.split(";") if "=" in p)
 
 
 def _origin_host_allowed(origin):
@@ -678,6 +865,24 @@ async def gw(request):
         rest += "?" + request.query_string
     _host = port_upstream_host(port)
     up = f"http://{_host}:{port}"
+    sess = port_session(request.app, port)
+    # M-551: strip edge-asserted identity FIRST so a forgery can never be
+    # proxied or mistaken downstream, then optionally mint a portal
+    # session BEFORE proxying: the minted cookies both reach the browser
+    # (Set-Cookie below) and authenticate this same upstream request —
+    # one round trip, no redirect. Skipped when the browser already holds
+    # a session, the port has no auto_login profile, or identity proof
+    # fails; all three fall through to the normal upstream (OTP form).
+    _edge_headers = strip_spoofable_identity(request.headers)
+    _minted_cookies = []
+    if port_auto_login(port) and not has_auth_cookie(request.headers.get("Cookie", "")):
+        _peer_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if auto_login_identity(request, _edge_headers, _peer_ip):
+            _secret = portal_login_secret()
+            if _secret:
+                _minted_cookies = await mint_portal_session(sess, port, _secret)
+                if _minted_cookies:
+                    print(f"portal-gw: auto-login {port} minted {len(_minted_cookies)} cookies", flush=True)
     hdr = {k: v for k, v in request.headers.items()
            if k.lower() not in HOP
            and k.lower() not in ("host", "accept-encoding", "origin",
@@ -690,6 +895,14 @@ async def gw(request):
     if "Cookie" in hdr or "cookie" in hdr:
         _ck_key = "Cookie" if "Cookie" in hdr else "cookie"
         hdr[_ck_key] = dedupe_cookie(hdr[_ck_key], "cockpit")
+    if _minted_cookies:
+        # M-551: this same upstream request authenticates with the fresh
+        # session (first visit lands logged-in, no second round trip).
+        # Only the session cookies minted above are merged — never the
+        # secret, which is not a cookie and never enters hdr.
+        _fresh = "; ".join(c.split(";", 1)[0] for c in _minted_cookies)
+        _ck_key = "Cookie" if "Cookie" in hdr else "cookie" if "cookie" in hdr else "Cookie"
+        hdr[_ck_key] = (hdr[_ck_key] + "; " + _fresh) if hdr.get(_ck_key) else _fresh
     hdr["Host"] = f"localhost:{port}"
     _omode = str(port_origin_mode(port)).strip()
     if "Origin" in request.headers:
@@ -703,7 +916,6 @@ async def gw(request):
     if ref:
         hdr["Referer"] = re.sub(r"^https?://[^/]+(/p/\d+)?",
                                 f"http://localhost:{port}", ref)
-    sess = port_session(request.app, port)
     if request.headers.get("Upgrade", "").lower() == "websocket":
         protos = [p.strip() for p in
                   request.headers.get("Sec-WebSocket-Protocol", "").split(",")
@@ -794,9 +1006,10 @@ async def gw(request):
                 }), flush=True)
             for c in stale_cookie_expiry(_set_cookies, request_is_https(request)):
                 resp.headers.add("Set-Cookie", c)
-            for c in _set_cookies:
-                rewritten = rewrite_cookie(c, request_is_https(request))
-                resp.headers.add("Set-Cookie", rewritten)
+            for c in _minted_cookies:
+                # M-551: the fresh session reaches the browser Partitioned
+                # like any other upstream cookie (cross-site tailnet iframe).
+                resp.headers.add("Set-Cookie", rewrite_cookie(c, request_is_https(request)))
             # M-540: remember this port for prefix-less iframe navigations.
             # Iframe navigations (the embed flow) set it too: the embed
             # flow never produces a document-destined request on the
