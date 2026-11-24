@@ -65,7 +65,7 @@ Run in a real Chromium (headed or Playwright) against `/p/<port>/` on the tailne
 Known breakers: `<base href>`, CSP nonces vs the injected shim, hard-coded absolute URLs, services that set `X-Frame-Options`/`frame-ancestors` (stripped) or check `Origin` with their own allowlist.
 
 ## 5. Enable and fall back
-- **Passed:** add the Muximux app name to `gateway-apps.json` `apps` (and, for deep links on public/tailnet hosts, a `claims` entry `{port, app, prefix, hosts}`); `portal-muximux-sync` then emits `url: /p/<port>/`.
+- **Passed:** add the Muximux app name to `gateway-apps.json` `apps` (and, for deep links on public/tailnet hosts, a `claims` entry `{port, app, prefix, hosts}`); `portal-muximux-sync` then emits `url: /p/<port>/`. Keep the live `public_host`/`tailnet_host` keys explicit (repo copy stays `""` by redaction policy); list claim `hosts` in deployment order with the portal host first — the gateway allows the union of all claim hosts but takes its single canonical host from explicit config first, else first-in-order, never sort order (M-547).
 - **Failed or unverified:** leave it out; set the port's `open:` profile in `port-profiles.yaml` to `public` or `newtab` (opens outside the iframe) and record the reason in the ADR open items.
 - Rollback: remove the name from `gateway-apps.json`; the next sync (~30 s) restores the previous behaviour.
 

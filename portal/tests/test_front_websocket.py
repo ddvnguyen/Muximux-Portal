@@ -55,9 +55,11 @@ class FrontWebsocketRouting(unittest.TestCase):
         # M-540 addendum 2: env/JSON/empty matrix. Placeholder default is
         # gone: unknown host leaves the CSP untouched.
         prev_env = os.environ.get("PORTAL_TAILNET_HOST")
+        prev_origins = front.TAILNET_ORIGINS
         os.environ["PORTAL_TAILNET_HOST"] = "probe.tailnet.ts.net"
         try:
             front.TAILNET_ORIGIN = "https://probe.tailnet.ts.net"
+            front.TAILNET_ORIGINS = ("https://probe.tailnet.ts.net",)
             result = front.allow_tailnet_probe("default-src 'self'; connect-src 'self'; object-src 'none'")
             self.assertIn("connect-src 'self' https://probe.tailnet.ts.net", result)
             self.assertIn("object-src 'none'", result)
@@ -69,16 +71,32 @@ class FrontWebsocketRouting(unittest.TestCase):
                 os.environ["PORTAL_TAILNET_HOST"] = prev_env
             front.TAILNET_ORIGIN = ("https://" + front._portal_hosts()[0]
                                     if front._portal_hosts()[0] else "")
+            front.TAILNET_ORIGINS = prev_origins
 
     def test_tailnet_probe_unknown_host_leaves_csp_untouched(self):
-        prev = front.TAILNET_ORIGIN
+        prev = (front.TAILNET_ORIGIN, front.TAILNET_ORIGINS)
         front.TAILNET_ORIGIN = ""
+        front.TAILNET_ORIGINS = ()
         try:
             csp = "default-src 'self'; connect-src 'self'; object-src 'none'"
             self.assertEqual(front.allow_tailnet_probe(csp), csp)
             self.assertNotIn("example.ts.net", front.allow_tailnet_probe(csp))
         finally:
-            front.TAILNET_ORIGIN = prev
+            front.TAILNET_ORIGIN, front.TAILNET_ORIGINS = prev
+
+    def test_tailnet_probe_allows_every_tailnet_claim_host(self):
+        # M-547: the probe allowance is the union of tailnet claim hosts,
+        # not one guessed host.
+        prev = front.TAILNET_ORIGINS
+        front.TAILNET_ORIGINS = ("https://a.tailnet.ts.net",
+                                 "https://b.tailnet.ts.net")
+        try:
+            result = front.allow_tailnet_probe(
+                "default-src 'self'; connect-src 'self'")
+            self.assertIn("https://a.tailnet.ts.net", result)
+            self.assertIn("https://b.tailnet.ts.net", result)
+        finally:
+            front.TAILNET_ORIGINS = prev
 
     def test_portal_hosts_prefers_env_then_json_then_claims(self):
         import json as _json, tempfile as _tempfile
@@ -96,15 +114,22 @@ class FrontWebsocketRouting(unittest.TestCase):
         try:
             os.environ.pop("PORTAL_TAILNET_HOST", None)
             os.environ.pop("PORTAL_PUBLIC_HOST", None)
-            # claims fallback: single .ts.net host + first public host
+            # claims fallback: single .ts.net host + all claim hosts
+            # in deployment order (no sort-guess for the canonical host)
             self.assertEqual(front._portal_hosts(),
-                             ("node.tailnet.ts.net", "portal.test"))
+                             ("node.tailnet.ts.net", "",
+                              ("node.tailnet.ts.net", "portal.test")))
+            self.assertEqual(
+                front._canonical_portal_host(
+                    ["portal.test"], front._portal_hosts()[1]),
+                "portal.test")
             # JSON keys win over claims when non-empty
             staged.update(tailnet_host="json.tailnet.ts.net", public_host="json.portal.test")
             with open(tmp.name, "w") as f:
                 _json.dump(staged, f)
             self.assertEqual(front._portal_hosts(),
-                             ("json.tailnet.ts.net", "json.portal.test"))
+                             ("json.tailnet.ts.net", "json.portal.test",
+                              ("node.tailnet.ts.net", "portal.test")))
             # env wins over JSON
             os.environ["PORTAL_TAILNET_HOST"] = "env.tailnet.ts.net"
             self.assertEqual(front._portal_hosts()[0], "env.tailnet.ts.net")
@@ -117,6 +142,15 @@ class FrontWebsocketRouting(unittest.TestCase):
                 else:
                     os.environ[key] = val
             __import__("os").unlink(tmp.name)
+
+    def test_canonical_portal_host_never_sort_guesses(self):
+        # M-547 regression: several public claims must not resolve to
+        # the alphabetically-first public host.
+        self.assertEqual(
+            front._canonical_portal_host(
+                ["portal.example.com", "aaa-public.example.com"], ""),
+            "portal.example.com")
+        self.assertEqual(front._canonical_portal_host([], ""), "")
 
     def test_claimed_top_level_paths_redirect_to_the_portal(self):
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -326,10 +360,13 @@ class FrontWebsocketRouting(unittest.TestCase):
         # allow ... embedded" error. The public host keeps strict framing.
         # Hosts come from gateway-apps.json claims (same file the front
         # reads live), so the test stages a temp claims file.
+        # M-547: ancestors are the union of public claim hosts, so the
+        # real portal host is allowed even when it does not sort first.
         import json as _json, tempfile as _tempfile
         staged = {"claims": [{"port": 9090, "app": "cockpit",
                               "prefix": "/cockpit/",
-                              "hosts": ["node.tailnet.ts.net", "portal.test"]}],
+                              "hosts": ["portal.test", "node.tailnet.ts.net",
+                                        "aaa-public.test"]}],
                   "apps": [], "registered_apps": []}
         tmp = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
         _json.dump(staged, tmp)
@@ -370,6 +407,7 @@ class FrontWebsocketRouting(unittest.TestCase):
                 tailnet = get("node.tailnet.ts.net")
                 self.assertNotIn("x-frame-options", tailnet.lower())
                 self.assertIn("frame-ancestors 'self' https://portal.test", tailnet)
+                self.assertIn("https://aaa-public.test", tailnet)
                 public = get("portal.test")
                 self.assertIn("x-frame-options", public.lower())
                 self.assertIn("frame-ancestors 'self'", public)

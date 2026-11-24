@@ -71,41 +71,75 @@ FALLBACK_PORTS = {3701, 9090}
 CACHE_SECONDS = 5
 
 def _portal_hosts():
-    """Portal hostnames without placeholders (M-540 addendum 2).
+    """Portal hostnames without placeholders (M-547).
 
-    Same precedence as portal-front: env, gateway-apps.json keys, claims
-    hosts. Empty = unknown; keep the constant sets free of placeholders
-    so a Secure cookie or CORS origin can never be minted for a fake host.
+    Precedence: PORTAL_TAILNET_HOST/PORTAL_PUBLIC_HOST env, then
+    gateway-apps.json `tailnet_host`/`public_host` keys when non-empty,
+    then the claims `hosts` entries (live values written by the deploy,
+    redacted in repo). Returns (tailnet, portal_explicit, all_hosts):
+    the first two keep the single-canonical-host contract (cookie/CSP);
+    the third is the full allowed set in deployment order. Callers MUST
+    NOT pick one allowed host by sort order: with several public claims
+    the alphabetically-first public host is not the portal host, and
+    origin checks then 403 the real portal origin (M-547: `multica...`
+    sorts before `portal...`).
     """
     tailnet = os.environ.get("PORTAL_TAILNET_HOST", "")
     portal = os.environ.get("PORTAL_PUBLIC_HOST", "")
+    data = {}
     try:
         with open(os.path.join(HERE, "gateway-apps.json")) as f:
-            data = json.load(f)
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
     except (OSError, ValueError):
         data = {}
     if not tailnet and isinstance(data.get("tailnet_host"), str):
         tailnet = data["tailnet_host"].strip()
     if not portal and isinstance(data.get("public_host"), str):
         portal = data["public_host"].strip()
-    claims = data.get("claims", []) if isinstance(data, dict) else []
-    hosts = {h.lower() for claim in claims
-             if isinstance(claim, dict)
-             for h in claim.get("hosts", []) if isinstance(h, str)}
-    tails = {h for h in hosts if h.endswith(".ts.net")}
+    claims = data.get("claims", [])
+    ordered = []
+    seen = set()
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        for h in claim.get("hosts", []):
+            if isinstance(h, str) and h.lower() not in seen:
+                seen.add(h.lower())
+                ordered.append(h.lower())
+    tails = [h for h in ordered if h.endswith(".ts.net")]
     if not tailnet and len(tails) == 1:
-        tailnet = next(iter(tails))
-    if not portal:
-        pubs = sorted(h for h in hosts if h not in tails)
-        portal = pubs[0] if pubs else ""
-    return tailnet, portal
+        tailnet = tails[0]
+    return tailnet, portal, tuple(ordered)
 
 
-_TAILNET_BARE, _PORTAL_BARE = _portal_hosts()
+def _canonical_portal_host(public_claims, explicit):
+    """Single canonical public host for cookie/CSP use (M-547).
+
+    Explicit config wins. Otherwise the first public claim host in
+    deployment order wins. Sorted-order guessing is wrong with several
+    public claims, so as a last resort return "" (unknown) instead of
+    minting a Secure cookie or CORS origin for the wrong host.
+    """
+    if explicit:
+        return explicit
+    for h in public_claims:
+        return h
+    return ""
+
+
+_TAILNET_BARE, _PORTAL_EXPLICIT, _ALL_CLAIM_HOSTS = _portal_hosts()
+_PORTAL_BARE = _canonical_portal_host(
+    [h for h in _ALL_CLAIM_HOSTS if not h.endswith(".ts.net")],
+    _PORTAL_EXPLICIT)
 PORTAL_HOST = "https://" + _PORTAL_BARE if _PORTAL_BARE else ""
 TAILNET_HOST = "https://" + _TAILNET_BARE if _TAILNET_BARE else ""
-ALLOWED_ORIGIN_HOSTS = {h.lower() for h in (PORTAL_HOST, TAILNET_HOST) if h}
-HTTPS_HOSTS = {h for h in (_PORTAL_BARE, _TAILNET_BARE) if h}
+ALLOWED_ORIGIN_HOSTS = {h.lower() for h in
+                        [PORTAL_HOST, TAILNET_HOST] +
+                        ["https://" + h for h in _ALL_CLAIM_HOSTS] if h}
+HTTPS_HOSTS = {h.split("://", 1)[-1].split(":", 1)[0].lower()
+               for h in ALLOWED_ORIGIN_HOSTS if "://" in h}
 PROFILES_FILE = os.environ.get("PORTAL_GW_PROFILES_FILE") or os.path.join(HERE, "port-profiles.yaml")
 
 _cache = {"t": 0.0, "allow": set(FALLBACK_PORTS)}
@@ -241,9 +275,19 @@ def _origin_host_allowed(origin):
     netloc_origin = f"{u.scheme}://{u.netloc}".lower().rstrip("/")
     if netloc_origin in ALLOWED_ORIGIN_HOSTS:
         return True
+    # Bare-host set: PORTAL_HOST/TAILNET_HOST may be "" (unknown), so
+    # match against the derivation source (HTTPS_HOSTS) instead of the
+    # raw constants, which can contain "" and match nothing.
+    if host in HTTPS_HOSTS:
+        return True
     if host in ("localhost", "127.0.0.1"):
         return True
     return False
+
+
+def origin_host_allowed_public(origin):
+    """Public predicate for the allowed-origin set (M-547 tests)."""
+    return _origin_host_allowed(origin)
 
 
 def origin_allowed(request, port):
@@ -269,9 +313,6 @@ def origin_allowed(request, port):
         return sec_fetch in (None, "same-origin", "same-site", "none")
     if not _origin_host_allowed(real_origin):
         return False
-    if sec_fetch == "cross-site" and real_origin.lower() not in ALLOWED_ORIGIN_HOSTS:
-        # cross-site only ok for portal/tailnet hosts already allowed above
-        pass
     return True
 
 
@@ -835,8 +876,9 @@ async def ping(r):
         "Cache-Control": "no-store",
         "Vary": "Origin",
     }
-    if r.headers.get("Origin") == PORTAL_HOST:
-        headers["Access-Control-Allow-Origin"] = PORTAL_HOST
+    origin = (r.headers.get("Origin") or "").rstrip("/").lower()
+    if origin and origin in ALLOWED_ORIGIN_HOSTS:
+        headers["Access-Control-Allow-Origin"] = origin
     return web.Response(text="pgw-ok", headers=headers)
 
 
