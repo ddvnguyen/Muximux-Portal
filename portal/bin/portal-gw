@@ -295,19 +295,16 @@ def port_auto_login(port):
 
 
 def strip_spoofable_identity(headers):
-    """M-551: drop edge-asserted identity headers from the inbound request.
+    """M-551: read (do NOT forward) edge-asserted identity headers.
 
-    `headers` is a mutable case-insensitive mapping (aiohttp's CIMultiDict
-    qualifies). Returns the removed values for the verified-identity path;
-    the caller MUST NOT trust them without out-of-band verification."""
-    removed = {}
-    for key in list(headers.keys()):
-        if key.lower() in SPOOFABLE_IDENTITY_HEADERS:
-            try:
-                removed[key.lower()] = headers.pop(key)
-            except KeyError:
-                pass
-    return removed
+    Returns the edge values keyed by lower-cased name; the caller MUST NOT
+    trust them without out-of-band verification (Access JWT signature /
+    tailscale whois). The caller is responsible for excluding these from
+    the proxied `hdr` — see the `hdr` comprehension in gw(), which drops
+    them alongside hop-by-hop headers. Takes the immutable CIMultiDictProxy
+    as-is (no mutation: aiohttp request headers are read-only)."""
+    return {key.lower(): value for key, value in headers.items()
+            if key.lower() in SPOOFABLE_IDENTITY_HEADERS}
 
 
 def portal_login_secret():
@@ -885,6 +882,7 @@ async def gw(request):
                     print(f"portal-gw: auto-login {port} minted {len(_minted_cookies)} cookies", flush=True)
     hdr = {k: v for k, v in request.headers.items()
            if k.lower() not in HOP
+           and k.lower() not in SPOOFABLE_IDENTITY_HEADERS
            and k.lower() not in ("host", "accept-encoding", "origin",
                                  "referer", "sec-fetch-site")}
     if port_is_loopback_source(port):

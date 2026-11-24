@@ -75,7 +75,7 @@ class AutoLoginProfile(unittest.TestCase):
 
 
 class StripSpoofableIdentity(unittest.TestCase):
-    def test_strips_and_returns_edge_headers(self):
+    def test_reads_edge_headers_without_mutating(self):
         hdrs = FakeHeaders({
             "Cookie": "a=b",
             "Cf-Access-Authenticated-User-Email": "ddvnguyen@gmail.com",
@@ -87,18 +87,16 @@ class StripSpoofableIdentity(unittest.TestCase):
         self.assertEqual(removed["cf-access-authenticated-user-email"], "ddvnguyen@gmail.com")
         self.assertEqual(removed["cf-access-jwt-assertion"], "jwt")
         self.assertEqual(removed["tailscale-user-login"], "ddvnguyen@gmail.com")
-        self.assertEqual(hdrs, {"Cookie": "a=b", "X-Forwarded-For": "100.127.245.31"})
+        # immutable input untouched; gw() excludes these from the proxy hdr
+        self.assertIn("Cf-Access-Jwt-Assertion", hdrs)
 
     def test_case_insensitive(self):
         hdrs = FakeHeaders({"CF-ACCESS-JWT-ASSERTION": "x"})
-        removed = gateway.strip_spoofable_identity(hdrs)
-        self.assertEqual(removed, {"cf-access-jwt-assertion": "x"})
-        self.assertEqual(hdrs, {})
+        self.assertEqual(gateway.strip_spoofable_identity(hdrs),
+                         {"cf-access-jwt-assertion": "x"})
 
     def test_no_identity_headers_noop(self):
-        hdrs = FakeHeaders({"Cookie": "a=b"})
-        self.assertEqual(gateway.strip_spoofable_identity(hdrs), {})
-        self.assertEqual(hdrs, {"Cookie": "a=b"})
+        self.assertEqual(gateway.strip_spoofable_identity(FakeHeaders({"Cookie": "a=b"})), {})
 
 
 class VerifyAccessIdentity(unittest.TestCase):
