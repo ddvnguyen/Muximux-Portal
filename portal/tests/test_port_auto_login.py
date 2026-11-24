@@ -32,13 +32,14 @@ finally:
     sys.argv = args
 
 
-def _request(port=3701, cookie="", headers=None):
+def _request(port=3701, cookie="", headers=None, remote="127.0.0.1"):
     req = mock.Mock()
     req.match_info = {"port": str(port), "rest": ""}
     hdrs = dict(headers or {})
     if cookie:
         hdrs["Cookie"] = cookie
     req.headers = hdrs
+    req.remote = remote
     return req
 
 
@@ -166,6 +167,41 @@ class TailscaleLoginFor(unittest.TestCase):
     def test_empty_ip_is_empty(self):
         self.assertEqual(gateway.tailscale_login_for(""), "")
 
+    def test_garbage_ip_is_empty(self):
+        self.assertEqual(gateway.tailscale_login_for("not-an-ip"), "")
+
+
+class TrustedTailnetPeer(unittest.TestCase):
+    def test_loopback_remote_uses_last_xff(self):
+        req = _request(headers={"X-Forwarded-For": "1.2.3.4, 100.127.245.31"},
+                       remote="127.0.0.1")
+        self.assertEqual(gateway.trusted_tailnet_peer(req), "100.127.245.31")
+
+    def test_single_xff(self):
+        req = _request(headers={"X-Forwarded-For": "100.127.245.31"},
+                       remote="127.0.0.1")
+        self.assertEqual(gateway.trusted_tailnet_peer(req), "100.127.245.31")
+
+    def test_non_loopback_remote_is_empty(self):
+        # Gateway reached directly: no trusted hop appended XFF, so "" —
+        # the tailnet whois path only runs behind Caddy.
+        req = _request(headers={"X-Forwarded-For": "100.127.245.31"},
+                       remote="203.0.113.9")
+        self.assertEqual(gateway.trusted_tailnet_peer(req), "")
+
+    def test_no_xff_is_empty(self):
+        self.assertEqual(gateway.trusted_tailnet_peer(_request(remote="127.0.0.1")), "")
+
+    def test_garbage_last_entry_is_empty(self):
+        req = _request(headers={"X-Forwarded-For": "1.2.3.4, garbage"},
+                       remote="127.0.0.1")
+        self.assertEqual(gateway.trusted_tailnet_peer(req), "")
+
+    def test_garbage_remote_is_empty(self):
+        req = _request(headers={"X-Forwarded-For": "100.127.245.31"},
+                       remote="garbage")
+        self.assertEqual(gateway.trusted_tailnet_peer(req), "")
+
 
 class AutoLoginIdentity(unittest.TestCase):
     def setUp(self):
@@ -210,6 +246,32 @@ class AutoLoginIdentity(unittest.TestCase):
         with mock.patch.object(gateway, "verify_access_identity", return_value=""):
             with mock.patch.object(gateway, "tailscale_login_for", return_value="someone@else.com"):
                 self.assertEqual(gateway.auto_login_identity(req, {}, "100.127.245.31"), "")
+
+    def test_forged_first_xff_entry_ignored(self):
+        # Attacker sends XFF "<owner tailnet ip>, <real>" with no JWT: the
+        # gateway must whois the LAST entry (the untrusted real IP -> ""),
+        # never entry 0. Regression for the M-551 review P1.
+        req = _request(headers={"X-Forwarded-For": "100.127.245.31, 203.0.113.9"},
+                       remote="127.0.0.1")
+        with mock.patch.object(gateway, "verify_access_identity", return_value=""):
+            with mock.patch.object(gateway, "tailscale_login_for",
+                                   side_effect=lambda ip: "ddvnguyen@gmail.com"
+                                   if ip == "100.127.245.31" else ""):
+                peer = gateway.trusted_tailnet_peer(req)
+                self.assertEqual(peer, "203.0.113.9")
+                self.assertEqual(gateway.auto_login_identity(req, {}, peer), "")
+
+    def test_forged_last_xff_entry_whois_fails_closed(self):
+        # Attacker appends their own IP last ("<real>, <owner-ip>" cannot
+        # happen through Caddy, which appends; but if it did, whois on a
+        # non-tailnet IP fails closed -> no mint).
+        req = _request(headers={"X-Forwarded-For": "203.0.113.9, 100.127.245.31"},
+                       remote="127.0.0.1")
+        with mock.patch.object(gateway, "verify_access_identity", return_value=""):
+            with mock.patch.object(gateway, "tailscale_login_for", return_value=""):
+                peer = gateway.trusted_tailnet_peer(req)
+                self.assertEqual(peer, "100.127.245.31")
+                self.assertEqual(gateway.auto_login_identity(req, {}, peer), "")
 
 
 class HasAuthCookie(unittest.TestCase):

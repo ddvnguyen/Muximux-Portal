@@ -375,11 +375,16 @@ def verify_access_identity(assertion, email):
 
 
 def tailscale_login_for(peer_ip):
-    """M-551: tailnet login owning `peer_ip` via `tailscale whois` (""). 
+    """M-551: tailnet login owning `peer_ip` via `tailscale whois` ("").
 
     Fails closed: any error (binary missing, unknown IP, parse failure)
     means no identity, and the caller falls through to the OTP form."""
     if not peer_ip:
+        return ""
+    try:
+        import ipaddress
+        ipaddress.ip_address(peer_ip)
+    except ValueError:
         return ""
     try:
         import subprocess
@@ -392,6 +397,39 @@ def tailscale_login_for(peer_ip):
         return str(user.get("LoginName", "") or "").strip().lower()
     except Exception:
         return ""
+
+
+def trusted_tailnet_peer(request):
+    """M-551: the one peer address the gateway may whois, or "".
+
+    Chain (live-verified 2026-11-24): tailscale serve terminates tailnet
+    TLS and proxies to Caddy, which appends the tailnet source IP to
+    X-Forwarded-For and proxies from loopback to the gateway. So when the
+    gateway's own TCP peer (`request.remote`) is loopback, the LAST XFF
+    entry is the address the nearest trusted hop (Caddy) observed — client
+    entries before it are untrusted and never read. Entry 0 is NEVER used:
+    a forged `X-Forwarded-For: <owner-ip>, ...` would otherwise mint a
+    session with no JWT. When the gateway is reached directly (remote is
+    not loopback) there is no trusted hop, so "" — the tailnet path only
+    exists behind Caddy."""
+    remote = request.remote or ""
+    xff = [p.strip() for p in (request.headers.get("X-Forwarded-For", "") or "").split(",")
+           if p.strip()]
+    try:
+        import ipaddress
+        is_loopback = ipaddress.ip_address(remote).is_loopback if remote else False
+    except ValueError:
+        return ""
+    if not is_loopback:
+        return ""
+    if not xff:
+        return ""
+    last = xff[-1]
+    try:
+        ipaddress.ip_address(last)
+    except ValueError:
+        return ""
+    return last
 
 
 def auto_login_identity(request, edge_headers, peer_ip):
@@ -873,8 +911,7 @@ async def gw(request):
     _edge_headers = strip_spoofable_identity(request.headers)
     _minted_cookies = []
     if port_auto_login(port) and not has_auth_cookie(request.headers.get("Cookie", "")):
-        _peer_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        if auto_login_identity(request, _edge_headers, _peer_ip):
+        if auto_login_identity(request, _edge_headers, trusted_tailnet_peer(request)):
             _secret = portal_login_secret()
             if _secret:
                 _minted_cookies = await mint_portal_session(sess, port, _secret)
@@ -1004,6 +1041,9 @@ async def gw(request):
                 }), flush=True)
             for c in stale_cookie_expiry(_set_cookies, request_is_https(request)):
                 resp.headers.add("Set-Cookie", c)
+            for c in _set_cookies:
+                rewritten = rewrite_cookie(c, request_is_https(request))
+                resp.headers.add("Set-Cookie", rewritten)
             for c in _minted_cookies:
                 # M-551: the fresh session reaches the browser Partitioned
                 # like any other upstream cookie (cross-site tailnet iframe).
