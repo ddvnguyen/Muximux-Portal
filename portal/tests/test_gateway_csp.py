@@ -55,6 +55,25 @@ class GatewayCsp(unittest.TestCase):
         self.assertEqual(allowed.headers.get("Access-Control-Allow-Private-Network"), "true")
         self.assertNotIn("Access-Control-Allow-Origin", other.headers)
 
+    def test_ping_echoes_each_allowed_origin_not_a_fixed_host(self):
+        # M-547 add-on: the tailnet chooser fetches the tailnet /pgw-ping
+        # from the portal origin; a fixed guessed ACAO breaks it. Every
+        # allowed origin must be echoed back, foreign gets no ACAO.
+        class Request:
+            def __init__(self, origin):
+                self.headers = {"Origin": origin}
+        for origin in ("https://portal.example.com",
+                       "https://tailnet-host.example.ts.net"):
+            resp = asyncio.run(gateway.ping(Request(origin)))
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"),
+                             origin)
+            self.assertEqual(
+                resp.headers.get("Access-Control-Allow-Private-Network"),
+                "true")
+            self.assertIn("Origin", resp.headers.get("Vary", ""))
+        denied = asyncio.run(gateway.ping(Request("https://evil.example")))
+        self.assertNotIn("Access-Control-Allow-Origin", denied.headers)
+
     def test_cookie_scope_survives_prefixed_websocket_and_cross_site_iframe(self):
         result = gateway.rewrite_cookie(
             "cockpit=value; DOMAIN=localhost; path=/cockpit; SameSite=Strict; HttpOnly", True)
