@@ -91,3 +91,31 @@ no probe allowance, no framing change, no Secure-cookie eligibility.
 Acceptance note: Playwright ran on Chromium + Firefox (Zen engine).
 WebKit is installed but its browser binary is missing in this environment
 (`pw_run.sh` absent), so WebKit is unverified — reported, not blocking.
+
+## Addendum 3 (2026-11-24, M-547): allowed origins are a union, never a guess
+Regression from addendum 2: with several public claim hosts the code
+picked the alphabetically-first non-`.ts.net` claim host as the public
+portal host. Live claims list `portal...`, a `.ts.net` host, and
+`multica...`, so the gateway allowed `https://multica.ddvnguyen.com`
+but 403'd every POST/PUT/PATCH/DELETE/WS from the real portal origin
+`https://portal.ddvnguyen.com` — Multica broke on the public portal
+(WS `wss://.../p/3701/ws` failed, `POST .../search-index/changes`
+403, "Loading more failed").
+
+Fix: both binaries treat the allowed set as the union of env hosts,
+`gateway-apps.json` `tailnet_host`/`public_host` keys, and every
+claim host, in deployment order, deduplicated. Where a single
+canonical host is needed (cookie/CSP/frame-ancestors,
+`Access-Control-Allow-Origin` echo) it comes from explicit config
+first, else the first claim host in deployment order — never from
+sort order. The gateway's `/pgw-ping` echoes back the request Origin
+when it is in the allowed set (was: only the guessed canonical
+portal origin). `request_is_https` matches against the full derived
+host set.
+
+Live `gateway-apps.json` must carry explicit `public_host` /
+`tailnet_host` keys (repo copy keeps `""` placeholders by policy);
+claim entries keep the live host list in deployment order with the
+portal host first. Regression tests pin the union for every claim
+host plus tailnet plus foreign-denied, POST/WS paths, and ordering
+independence (same allowed set under permuted claims).
