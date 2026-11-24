@@ -167,6 +167,29 @@ PORTAL_LOGIN_SECRET_FILE = os.environ.get("MULTICA_PORTAL_LOGIN_SECRET_FILE", ""
 # dedicated internal listener (MULTICA_PORTAL_LOGIN_ADDR, 127.0.0.1-only).
 # This URL points the mint call at that listener instead of the app port.
 PORTAL_LOGIN_URL = os.environ.get("MULTICA_PORTAL_LOGIN_URL", "")
+# M-551 exec fallback: the container network does not hairpin host->published
+# container-loopback, so the gateway mints by exec'ing the mint request
+# INSIDE the backend container instead of HTTP. Off when unset; when set,
+# exec is the only mint path (the HTTP mode stays for other deployments).
+# Values: container name, secret FILE path INSIDE the container, request
+# target host:port as seen from inside the container. The secret is read
+# inside the container, never on the host command line.
+PORTAL_LOGIN_EXEC_CONTAINER = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_CONTAINER", "")
+PORTAL_LOGIN_EXEC_SECRET_FILE = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_SECRET_FILE", "")
+PORTAL_LOGIN_EXEC_TARGET = os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791")
+def _exec_timeout_seconds(raw):
+    """M-551: exec timeout with a safe default. A typo'd env value must
+    degrade to the default, never kill the gateway at import."""
+    try:
+        value = float(raw or 8)
+    except (TypeError, ValueError):
+        return 8.0
+    if value <= 0:
+        return 8.0
+    return value
+
+
+PORTAL_LOGIN_EXEC_TIMEOUT = _exec_timeout_seconds(os.environ.get("MULTICA_PORTAL_LOGIN_EXEC_TIMEOUT"))
 PORTAL_LOGIN_JWKS_FILE = os.environ.get(
     "MULTICA_PORTAL_LOGIN_JWKS_FILE",
     os.path.expanduser("~/.cloudflared/ddvcloud.cloudflareaccess.com-jwks"))
@@ -473,16 +496,107 @@ def portal_login_url(port):
     return f"http://127.0.0.1:{port}/auth/portal-session"
 
 
-async def mint_portal_session(sess, port, secret):
-    """M-551: call the internal portal-session listener, return Set-Cookies.
+def portal_login_exec():
+    """M-551 exec fallback: (container, secret_source, target) or (None, ...).
 
-    The secret travels ONLY on this loopback subrequest, never on proxied
-    upstream traffic. Any failure (listener off, wrong secret, multica
-    down) returns [] and the caller serves the normal upstream response
-    (OTP form), so a misconfigured secret degrades to today's login,
-    never to an error page."""
+    Off when MULTICA_PORTAL_LOGIN_EXEC_CONTAINER is unset. secret_source
+    is a shell fragment evaluated INSIDE the container: `$(cat <file>)`
+    when MULTICA_PORTAL_LOGIN_EXEC_SECRET_FILE names a mounted file,
+    else `$(printenv MULTICA_PORTAL_LOGIN_SECRET)` for the env-passed
+    secret (prod today). Either way the value never crosses into host argv."""
+    if not PORTAL_LOGIN_EXEC_CONTAINER:
+        return None, None, None
+    if PORTAL_LOGIN_EXEC_SECRET_FILE:
+        source = "$(cat " + PORTAL_LOGIN_EXEC_SECRET_FILE + ")"
+    else:
+        source = "$(printenv MULTICA_PORTAL_LOGIN_SECRET)"
+    return (PORTAL_LOGIN_EXEC_CONTAINER, source,
+            PORTAL_LOGIN_EXEC_TARGET or "127.0.0.1:3791")
+
+
+async def mint_portal_session_exec(port, secret):
+    """M-551 exec fallback: mint inside the backend container via podman exec.
+
+    Fixed argv, no shell. The secret travels inside the container only:
+    command substitution reads it from the mounted file or container env.
+    Parses the raw HTTP response for Set-Cookie headers. Any failure
+    (timeout, non-zero exit, non-200) returns [] so the caller falls
+    through to the OTP form. Single attempt, no retry."""
+    container, secret_source, target = portal_login_exec()
+    if not container or not secret:
+        return []
+    host, _, dest_port = target.partition(":")
+    dest_port = dest_port or "80"
+    # Raw HTTP/1.0 over the container busybox nc: full response headers,
+    # no client dependency beyond coreutils. The secret enters the
+    # request via command substitution INSIDE the container — the host
+    # argv carries only the file path, never the value.
+    crlf = chr(13) + chr(10)
+    q = chr(39)
+    dq = chr(34)
+    # printf FORMAT: secret is %s, filled by the command substitution that
+    # follows it — both expand inside the container (double quotes: sh
+    # does NOT expand $(...) inside single quotes). Host argv carries only
+    # the file path or env var NAME, never the value.
+    fmt = (q + "POST /auth/portal-session HTTP/1.0" + crlf
+           + "Host: 127.0.0.1" + crlf
+           + "Content-Type: application/json" + crlf
+           + "Content-Length: 2" + crlf
+           + "X-Portal-Login-Secret: %s" + crlf + crlf + "{}" + q)
+    script = ("printf " + fmt + " " + dq + secret_source + dq
+              + " | nc -w 5 " + host + " " + dest_port)
+    argv = ["podman", "exec", "-i", container, "sh", "-c", script]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), PORTAL_LOGIN_EXEC_TIMEOUT)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            print("portal-gw: portal-session exec timeout", flush=True)
+            return []
+        if proc.returncode != 0:
+            print(f"portal-gw: portal-session exec exit {proc.returncode}", flush=True)
+            return []
+        text = out.decode("utf-8", "replace")
+        head, _, _ = text.partition("\r\n\r\n")
+        if "\n\n" in text and ("\r\n\r\n" not in text or
+                                text.index("\n\n") < text.index("\r\n\r\n")):
+            head = text.partition("\n\n")[0]
+        status = head.splitlines()[0] if head.splitlines() else ""
+        if " 200 " not in (" " + status + " "):
+            print(f"portal-gw: portal-session exec -> {status[:60]}", flush=True)
+            return []
+        cookies = []
+        in_head = True
+        for line in head.splitlines()[1:]:
+            if not line.strip():
+                break
+            name, _, value = line.partition(":")
+            if name.strip().lower() == "set-cookie" and value.strip():
+                cookies.append(value.strip())
+        return cookies
+    except Exception as e:
+        print(f"portal-gw: portal-session exec failed ({e!r})", flush=True)
+        return []
+
+
+async def mint_portal_session(sess, port, secret):
+    """M-551: mint via exec (when configured) or the internal HTTP listener.
+
+    The secret travels ONLY to the mint path, never on proxied upstream
+    traffic. Any failure returns [] and the caller serves the normal
+    upstream response (OTP form), so a misconfigured mint degrades to
+    today's login, never to an error page."""
     if not secret:
         return []
+    container, _, _ = portal_login_exec()
+    if container:
+        return await mint_portal_session_exec(port, secret)
     url = portal_login_url(port)
     try:
         async with sess.post(url,

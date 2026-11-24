@@ -19,6 +19,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import subprocess
+
 from aiohttp import web
 
 loader = importlib.machinery.SourceFileLoader(
@@ -387,6 +389,124 @@ class PortalLoginUrl(unittest.TestCase):
                                "http://127.0.0.1:18791/auth/portal-session"):
             asyncio.run(gateway.mint_portal_session(FakeSess(), 3701, "s3cret"))
         self.assertEqual(seen["url"], "http://127.0.0.1:18791/auth/portal-session")
+
+
+class PortalLoginExec(unittest.TestCase):
+    def test_off_by_default(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", ""):
+            self.assertEqual(gateway.portal_login_exec(), (None, None, None))
+
+    def test_config_tuple_file(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", "multica_backend_1"):
+            with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_SECRET_FILE", "/run/secrets/x"):
+                with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791"):
+                    self.assertEqual(gateway.portal_login_exec(),
+                                     ("multica_backend_1", "$(cat /run/secrets/x)",
+                                      "127.0.0.1:3791"))
+
+    def test_config_tuple_env_fallback(self):
+        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", "multica_backend_1"):
+            with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_SECRET_FILE", ""):
+                with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791"):
+                    self.assertEqual(gateway.portal_login_exec(),
+                                     ("multica_backend_1",
+                                      "$(printenv MULTICA_PORTAL_LOGIN_SECRET)",
+                                      "127.0.0.1:3791"))
+
+    def _run_exec(self, script_out, returncode=0):
+        seen = {}
+
+        class FakeProc:
+            def __init__(self):
+                self.returncode = returncode
+
+            async def communicate(self):
+                return (script_out, b"")
+
+            def kill(self):
+                seen["killed"] = True
+
+        async def fake_create(*argv, **kwargs):
+            seen["argv"] = argv
+            return FakeProc()
+
+        async def fake_wait_for(coro, timeout):
+            return await coro
+
+        with mock.patch.object(gateway.asyncio, "create_subprocess_exec", fake_create):
+            with mock.patch.object(gateway.asyncio, "wait_for", fake_wait_for):
+                with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_CONTAINER", "multica_backend_1"):
+                    with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_SECRET_FILE", "/run/secrets/x"):
+                        with mock.patch.object(gateway, "PORTAL_LOGIN_EXEC_TARGET", "127.0.0.1:3791"):
+                            got = asyncio.run(gateway.mint_portal_session_exec(3701, "s3cret"))
+        return got, seen
+
+    def test_argv_has_no_secret(self):
+        body = ("HTTP/1.0 200 OK\r\n"
+                'Set-Cookie: multica_auth=tok; Path=/; HttpOnly\r\n'
+                'Set-Cookie: multica_csrf=c; Path=/\r\n\r\n{}')
+        got, seen = self._run_exec(body.encode())
+        argv = seen["argv"]
+        self.assertEqual(argv[0], "podman")
+        self.assertIn("multica_backend_1", argv)
+        flat = " ".join(argv)
+        self.assertNotIn("s3cret", flat)
+        self.assertIn("cat", flat)
+        self.assertEqual(got, ["multica_auth=tok; Path=/; HttpOnly",
+                               "multica_csrf=c; Path=/"])
+
+    def test_nonzero_exit_falls_through(self):
+        got, _ = self._run_exec(b"", returncode=1)
+        self.assertEqual(got, [])
+
+    def test_non_200_falls_through(self):
+        got, _ = self._run_exec(b"HTTP/1.0 404 Not Found\r\n\r\nnope")
+        self.assertEqual(got, [])
+
+    def test_garbage_output_falls_through(self):
+        got, _ = self._run_exec(b"not http at all")
+        self.assertEqual(got, [])
+
+    def test_substitution_is_double_quoted(self):
+        body = b"HTTP/1.0 200 OK\r\n\r\n{}"
+        _, seen = self._run_exec(body)
+        script = seen["argv"][-1]
+        # sh expands $(...) inside double quotes, not single quotes: the
+        # single-quoted form would send the literal string "$(cat ...)"
+        # and every login would silently fall through to OTP (M-551 review).
+        self.assertIn('"$(cat /run/secrets/x)"', script)
+        self.assertNotIn("'$(cat", script)
+
+    def test_substitution_expands_through_sh(self):
+        # End-to-end through a real shell: the built script, with a stubbed
+        # nc, must emit the secret value — proving the quoting expands.
+        _, seen = self._run_exec(b"HTTP/1.0 200 OK\r\n\r\n{}")
+        script = seen["argv"][-1]
+        stubdir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(stubdir, "nc"), "w") as f:
+                f.write("#!/bin/sh\ncat\n")
+            os.chmod(os.path.join(stubdir, "nc"), 0o755)
+            secret_path = os.path.join(stubdir, "secret")
+            with open(secret_path, "w") as f:
+                f.write("live-secret-value")
+            run_script = script.replace("/run/secrets/x", secret_path)
+            out = subprocess.run(["sh", "-c",
+                                  "PATH=" + stubdir + ":$PATH; " + run_script],
+                                 capture_output=True, text=True, timeout=10)
+            self.assertIn("X-Portal-Login-Secret: live-secret-value", out.stdout)
+            self.assertNotIn("$(cat", out.stdout)
+        finally:
+            import shutil
+            shutil.rmtree(stubdir, ignore_errors=True)
+
+    def test_exec_timeout_env(self):
+        self.assertEqual(gateway._exec_timeout_seconds(None), 8.0)
+        self.assertEqual(gateway._exec_timeout_seconds(""), 8.0)
+        self.assertEqual(gateway._exec_timeout_seconds("typo"), 8.0)
+        self.assertEqual(gateway._exec_timeout_seconds("-3"), 8.0)
+        self.assertEqual(gateway._exec_timeout_seconds("0"), 8.0)
+        self.assertEqual(gateway._exec_timeout_seconds("12"), 12.0)
 
 
 class PortalLoginSecret(unittest.TestCase):
