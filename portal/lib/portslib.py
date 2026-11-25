@@ -17,7 +17,9 @@ import subprocess
 import time
 
 ENV_HOME = "PORTS_HOME"
-DEFAULT_HOME = "/mnt/workspace/portal"
+# M-568: PORTAL_CONFIG_DIR points at the persistent site-config dir; it
+# takes precedence over PORTS_HOME so the registry follows the config.
+ENV_CONFIG_DIR = "PORTAL_CONFIG_DIR"
 APPS = {"dsh", "mmx", "moct", "multica", "hydra", "agents", "freebuff"}
 LANES = {"x", "z", "none"}
 TABS = {True, False, "auto"}
@@ -32,7 +34,7 @@ class RegistryError(ValueError):
 
 
 def home():
-    return os.environ.get(ENV_HOME) or DEFAULT_HOME
+    return os.environ.get(ENV_CONFIG_DIR) or os.environ.get(ENV_HOME) or DEFAULT_HOME
 
 
 def ts(epoch=None):

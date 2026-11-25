@@ -44,8 +44,10 @@ import portpage  # noqa: E402
 
 UI_DIR = os.path.join(HERE, "ui", "lease")
 PORTS_UI_DIR = os.path.join(HERE, "ui", "ports")
-PROFILES_PATH = os.path.join(HERE, "port-profiles.yaml")
-PUBLIC_HOSTS_PATH = os.path.join(HERE, "public-hosts.json")
+# M-568: site config (profiles, public hosts) lives outside the git tree.
+CONFIG_DIR = os.environ.get("PORTAL_CONFIG_DIR") or HERE
+PROFILES_PATH = os.path.join(CONFIG_DIR, "port-profiles.yaml")
+PUBLIC_HOSTS_PATH = os.path.join(CONFIG_DIR, "public-hosts.json")
 APP_PREFIX = "Lease :"
 
 

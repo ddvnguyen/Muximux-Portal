@@ -48,6 +48,8 @@ import aiohttp
 from aiohttp import WSMsgType, web
 
 HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+CONFIG_DIR = os.environ.get("PORTAL_CONFIG_DIR") or HERE
+CONFIG_SOURCE = "env" if "PORTAL_CONFIG_DIR" in os.environ else "repo"
 sys.path.insert(0, os.path.join(HERE, "lib"))
 try:
     from pgw.favicon import (  # M-357: per-app tab icons
@@ -65,8 +67,8 @@ _favicon_cache = {}  # port -> {"body", "content_type", "at"}
 LISTEN = ("127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 3738)
 REGISTRY_URL = "http://127.0.0.1:3726/ports/v1/registry"
 LEASES_URL = "http://127.0.0.1:3726/lease/v1/leases"
-DENY_FILE = os.environ.get("PORTAL_GW_DENY_FILE") or os.path.join(HERE, "ports-deny.yaml")
-REGISTERED_FILE = os.path.join(HERE, "ports.registered.json")
+DENY_FILE = os.environ.get("PORTAL_GW_DENY_FILE") or os.path.join(CONFIG_DIR, "ports-deny.yaml")
+REGISTERED_FILE = os.path.join(CONFIG_DIR, "ports.registered.json")
 FALLBACK_PORTS = {3701, 9090}
 CACHE_SECONDS = 5
 
@@ -88,7 +90,7 @@ def _portal_hosts():
     portal = os.environ.get("PORTAL_PUBLIC_HOST", "")
     data = {}
     try:
-        with open(os.path.join(HERE, "gateway-apps.json")) as f:
+        with open(os.path.join(CONFIG_DIR, "gateway-apps.json")) as f:
             loaded = json.load(f)
             if isinstance(loaded, dict):
                 data = loaded
@@ -140,7 +142,12 @@ ALLOWED_ORIGIN_HOSTS = {h.lower() for h in
                         ["https://" + h for h in _ALL_CLAIM_HOSTS] if h}
 HTTPS_HOSTS = {h.split("://", 1)[-1].split(":", 1)[0].lower()
                for h in ALLOWED_ORIGIN_HOSTS if "://" in h}
-PROFILES_FILE = os.environ.get("PORTAL_GW_PROFILES_FILE") or os.path.join(HERE, "port-profiles.yaml")
+# M-568: site config lives outside the git tree (PORTAL_CONFIG_DIR); the
+# repo copy stays a redacted template. A clean worktree has no origin
+# hosts — an empty allowed set must fail loud below, never serve as if
+# configured.
+SITE_CONFIGURED = bool(HTTPS_HOSTS)
+PROFILES_FILE = os.environ.get("PORTAL_GW_PROFILES_FILE") or os.path.join(CONFIG_DIR, "port-profiles.yaml")
 
 SPOOFABLE_IDENTITY_HEADERS = frozenset({
     # M-551: edge-asserted identity. Cloudflare Access adds these on the
@@ -1042,6 +1049,11 @@ async def sw(request):
         headers={"Cache-Control": "no-store", "Service-Worker-Allowed": "/"})
 
 async def gw(request):
+    # M-568: fail loud when site config is missing. A clean worktree has
+    # no origin hosts; refusing non-loopback traffic beats silently 403ing
+    # every browser origin. Loopback stays up for health checks.
+    if not SITE_CONFIGURED and (request.remote or "") not in ("127.0.0.1", "::1"):
+        return web.Response(status=503, text="portal-gw: no origin hosts configured (PORTAL_CONFIG_DIR)")
     port = int(request.match_info["port"])
     rest = "/" + request.match_info.get("rest", "")
     if port not in allowed_ports():
@@ -1281,6 +1293,8 @@ async def ping(r):
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Cache-Control": "no-store",
         "Vary": "Origin",
+        "X-Portal-Origin-Hosts": str(len(HTTPS_HOSTS)),
+        "X-Portal-Configured": "1" if SITE_CONFIGURED else "0",
     }
     origin = (r.headers.get("Origin") or "").rstrip("/").lower()
     if origin and origin in ALLOWED_ORIGIN_HOSTS:
@@ -1366,5 +1380,9 @@ app.router.add_route("*", "/p/{port:\\d+}",
 app.router.add_route("GET", "/p/{port:\\d+}/__favicon", favicon)
 app.router.add_route("*", "/p/{port:\\d+}/{rest:.*}", gw)
 if __name__ == "__main__":
+    if not SITE_CONFIGURED:
+        print(f"portal-gw: ERROR no origin hosts (config dir {CONFIG_DIR}, source {CONFIG_SOURCE}); serving loopback only", flush=True)
+    else:
+        print(f"portal-gw: origin hosts {len(HTTPS_HOSTS)} from {CONFIG_DIR} ({CONFIG_SOURCE})", flush=True)
     web.run_app(app, host=LISTEN[0], port=LISTEN[1],
                 print=lambda *_: print("portal-gw listening", LISTEN, flush=True))

@@ -96,6 +96,7 @@ Every gateway tab shows the app's own web-page favicon, not a generic icon:
 - A per-service smoke test in `tests/e2e/` (first load, login if needed, WS 101) run by a new `bin/portal-compat <port>` (to build, M-323; `bin/ports check` already exists and only checks registry drift).
 - Origin guard (ADR decision 11): state-changing methods and WS upgrades require a real `Origin` in {portal host, tailnet host, localhost, 127.0.0.1}; forged origins get 403. Override per port with `origin: none|<explicit>` in `port-profiles.yaml`.
 - No service is added to `gateway-apps.json` without passing section 4 with evidence on the card.
+- WS-origin deploy check (M-568): after every gateway deploy or worktree move, `curl /pgw-ping` must report `X-Portal-Configured: 1` with `X-Portal-Origin-Hosts` > 0, then verify the WS guard on `/p/3701/ws`: portal origin and tailnet origin get 101, a foreign origin gets 403. An empty `X-Portal-Origin-Hosts: 0` means `PORTAL_CONFIG_DIR` is unset or unseeded — fix that, never ship; the gateway 503s non-loopback traffic instead of 403ing every browser origin.
 
 ## 7. Perf baseline (M-341, 2026-11-14, same machine `<server>`)
 Chunk `/_next/static/chunks/02iy0-j94q3_r.js` (Multica :3701), 5-run medians:
