@@ -796,6 +796,14 @@ def rewrite_cookie(cookie, secure):
     return cookie
 
 
+# M-551 duplicate-cookie dedupe (M-237 cockpit pattern, extended): the
+# Owner's jar can hold a stale plus a fresh session side by side (pre-fix
+# login struggles + auto-login mint). The backend CSRF-checks POSTs against
+# the FIRST multica_auth cookie, so a stale-first jar 403s every POST while
+# GETs (no CSRF) render fine. Keep the LAST (freshest) pair per name.
+SESSION_COOKIE_NAMES = ("multica_auth", "multica_csrf", "multica_csrf_session")
+
+
 def dedupe_cookie(cookie_header, name):
     """Keep only the LAST `name=` pair in a Cookie header.
 
@@ -813,17 +821,30 @@ def dedupe_cookie(cookie_header, name):
     return "; ".join(p for i, p in enumerate(parts) if i not in idx or i == keep)
 
 
+def dedupe_session_cookies(cookie_header):
+    """M-551: drop stale duplicates for every session cookie name.
+
+    Same LAST-wins rule as dedupe_cookie, applied to cockpit (M-237) plus
+    the three multica_* session cookies. Single cookies and unrelated
+    names pass through untouched, order preserved.
+    """
+    for name in ("cockpit",) + SESSION_COOKIE_NAMES:
+        cookie_header = dedupe_cookie(cookie_header, name)
+    return cookie_header
+
+
 def stale_cookie_expiry(set_cookies, secure):
     """Expire legacy unpartitioned copies of cookies we re-issue as Partitioned.
 
-    Only for the Cockpit session cookie; an unpartitioned `cockpit` cookie
-    shadows the partitioned one (see dedupe_cookie), so remove it at the source.
+    For the Cockpit session cookie and the multica_* session cookies: an
+    unpartitioned copy shadows the partitioned one (see dedupe_cookie), so
+    remove it at the source and the jar converges.
     """
     if not secure:
         return []
     names = {c.split("=", 1)[0].strip() for c in set_cookies}
     return [f"{n}=; Max-Age=0; Path=/; Secure; SameSite=None"
-            for n in sorted(names) if n == "cockpit"]
+            for n in sorted(names) if n in ("cockpit",) + SESSION_COOKIE_NAMES]
 
 
 def request_is_https(request):
@@ -1063,7 +1084,7 @@ async def gw(request):
             del hdr[_k]
     if "Cookie" in hdr or "cookie" in hdr:
         _ck_key = "Cookie" if "Cookie" in hdr else "cookie"
-        hdr[_ck_key] = dedupe_cookie(hdr[_ck_key], "cockpit")
+        hdr[_ck_key] = dedupe_session_cookies(hdr[_ck_key])
     if _minted_cookies:
         # M-551: this same upstream request authenticates with the fresh
         # session (first visit lands logged-in, no second round trip).
