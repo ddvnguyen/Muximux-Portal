@@ -38,6 +38,7 @@ class OriginUnionM547(unittest.TestCase):
 
     def _load_with_claims(self, hosts):
         import json as _json, tempfile as _tempfile
+        prev = dict(os.environ)
         staged = {"tailnet_host": "", "public_host": "",
                   "claims": [{"port": 3701, "app": "multica",
                               "prefix": "/moct/", "hosts": hosts}],
@@ -55,7 +56,7 @@ class OriginUnionM547(unittest.TestCase):
 
         mod = importlib.util.module_from_spec(
             importlib.util.spec_from_loader(loader.name, loader))
-        prev = dict(os.environ)
+        # prev captured at helper entry (before PORTAL_CONFIG_DIR was set).
         os.environ.pop("PORTAL_PUBLIC_HOST", None)
         os.environ.pop("PORTAL_TAILNET_HOST", None)
         argv = sys.argv
