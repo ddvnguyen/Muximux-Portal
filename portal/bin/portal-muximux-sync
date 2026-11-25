@@ -10,6 +10,8 @@ Reconciles through the Muximux REST API (POST/PUT/DELETE /api/app[s]); idempoten
 """
 import argparse, json, os, subprocess, sys, urllib.request, urllib.error
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# M-568: site config lives outside the git tree; repo files stay redacted templates.
+CONFIG_DIR = os.environ.get("PORTAL_CONFIG_DIR") or HERE
 TS_HOST = os.environ.get("PORTAL_TAILNET_HOST", "tailnet-host.example.ts.net")
 LEASE_PREFIX = "Lease :"   # apps owned by bin/lease-api (M-249), never hand-edited
 LEASE_API = "http://127.0.0.1:3726"
@@ -19,7 +21,7 @@ GROUP = {"dsh": "DSH", "moct": "MOCT", "multica": "Multica", "mmx": "MMX", "agen
 
 def _load_profiles():
     """port-profiles.yaml profiles (for the M-357 `icon:` override)."""
-    pf = os.path.join(HERE, "port-profiles.yaml")
+    pf = os.path.join(CONFIG_DIR, "port-profiles.yaml")
     try:
         import yaml
         with open(pf) as f:
@@ -93,9 +95,9 @@ def host_of(p):
 def desired(mode):
     ports = json.loads(subprocess.check_output([os.path.join(HERE, "bin", "ports"), "list", "--json"]))
     apps, seen = [], set()
-    pf = os.path.join(HERE, "public-hosts.json")
+    pf = os.path.join(CONFIG_DIR, "public-hosts.json")
     public = json.load(open(pf)) if os.path.exists(pf) else {}
-    gf = os.path.join(HERE, "gateway-apps.json")   # M-237: apps verified to work through the port gateway (/p/<port>/)
+    gf = os.path.join(CONFIG_DIR, "gateway-apps.json")   # M-237: apps verified to work through the port gateway (/p/<port>/)
     gateway_config = {}
     if os.path.exists(gf):
         with open(gf) as f:

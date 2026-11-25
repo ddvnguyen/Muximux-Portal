@@ -42,17 +42,17 @@ class OriginUnionM547(unittest.TestCase):
                   "claims": [{"port": 3701, "app": "multica",
                               "prefix": "/moct/", "hosts": hosts}],
                   "apps": [], "registered_apps": []}
-        tmp = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-        _json.dump(staged, tmp)
-        tmp.close()
+        tmpdir = _tempfile.mkdtemp()
+        with open(__import__("os").path.join(tmpdir, "gateway-apps.json"), "w") as _f:
+            _json.dump(staged, _f)
+        __import__("os").environ["PORTAL_CONFIG_DIR"] = tmpdir
         loader = importlib.machinery.SourceFileLoader(
             "portal_gw_m547",
             str(Path(__file__).resolve().parents[1] / "bin/portal-gw"))
         src = Path(
             str(Path(__file__).resolve().parents[1] / "bin/portal-gw")).read_text()
         here = str(Path(__file__).resolve().parents[1] / "bin")
-        src = src.replace('os.path.join(HERE, "gateway-apps.json")',
-                          repr(tmp.name))
+
         mod = importlib.util.module_from_spec(
             importlib.util.spec_from_loader(loader.name, loader))
         prev = dict(os.environ)
@@ -66,7 +66,7 @@ class OriginUnionM547(unittest.TestCase):
             sys.argv = argv
             os.environ.clear()
             os.environ.update(prev)
-        self.addCleanup(lambda: __import__("os").unlink(tmp.name))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
         return mod
 
     def test_all_claim_hosts_allowed_not_only_sorted_first(self):
@@ -104,6 +104,62 @@ class OriginUnionM547(unittest.TestCase):
                       mod.ALLOWED_ORIGIN_HOSTS)
         self.assertTrue(
             mod._origin_host_allowed("https://portal.ddvnguyen.com"))
+
+class SiteConfigDirM568(unittest.TestCase):
+    """M-568: site config lives outside the git tree. An empty config dir
+    reports unconfigured (fail loud); a seeded one allows the portal and
+    tailnet origins and foreign origins stay 403."""
+
+    def _load_with_dir(self, files):
+        import json as _json, tempfile as _tempfile
+        tmpdir = _tempfile.mkdtemp()
+        for name, obj in files.items():
+            with open(__import__("os").path.join(tmpdir, name), "w") as _f:
+                _json.dump(obj, _f)
+        loader = importlib.machinery.SourceFileLoader(
+            "portal_gw_m568",
+            str(Path(__file__).resolve().parents[1] / "bin/portal-gw"))
+        src = Path(
+            str(Path(__file__).resolve().parents[1] / "bin/portal-gw")).read_text()
+        here = str(Path(__file__).resolve().parents[1] / "bin")
+        mod = importlib.util.module_from_spec(
+            importlib.util.spec_from_loader(loader.name, loader))
+        prev = dict(os.environ)
+        os.environ["PORTAL_CONFIG_DIR"] = tmpdir
+        os.environ.pop("PORTAL_PUBLIC_HOST", None)
+        os.environ.pop("PORTAL_TAILNET_HOST", None)
+        argv = sys.argv
+        try:
+            sys.argv = ["portal-gw"]
+            exec(compile(src, here + "/portal-gw", "exec"), mod.__dict__)
+        finally:
+            sys.argv = argv
+            os.environ.clear()
+            os.environ.update(prev)
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
+        return mod
+
+    def test_empty_config_dir_reports_unconfigured(self):
+        mod = self._load_with_dir({})
+        self.assertFalse(mod.SITE_CONFIGURED)
+        self.assertEqual(mod.CONFIG_SOURCE, "env")
+        self.assertEqual(len(mod.HTTPS_HOSTS), 0)
+
+    def test_seeded_config_allows_portal_and_tailnet_origins(self):
+        mod = self._load_with_dir({
+            "gateway-apps.json": {
+                "tailnet_host": "", "public_host": "",
+                "claims": [{"port": 3701, "app": "multica",
+                            "prefix": "/moct/",
+                            "hosts": ["portal.ddvnguyen.com",
+                                      "ddv-server-00.zubron-denebola.ts.net"]}],
+                "apps": [], "registered_apps": []}})
+        self.assertTrue(mod.SITE_CONFIGURED)
+        for origin in ("https://portal.ddvnguyen.com",
+                       "https://ddv-server-00.zubron-denebola.ts.net"):
+            self.assertTrue(mod._origin_host_allowed(origin), origin)
+        self.assertFalse(mod._origin_host_allowed("https://evil.example"))
+
 
 
 if __name__ == "__main__":
